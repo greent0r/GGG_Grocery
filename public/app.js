@@ -13,7 +13,20 @@ async function load(){
   }catch{$('#failure').hidden=false}
   finally{$('#loading').hidden=true}
 }
-$('#grid').onclick=e=>{const button=e.target.closest('[data-index]');if(!button)return;const photo=photos[Number(button.dataset.index)];trigger=button;$('#full-photo').src=photo.preview;$('#full-photo').alt=photo.name;$('#original').href=photo.original;$('#viewer').showModal()};
+const cameraFields=[['camera','相机'],['lens','镜头'],['shutter','快门'],['aperture','光圈'],['iso','ISO'],['focalLength','焦距'],['equivalentFocalLength','等效焦距'],['capturedAt','拍摄时间'],['whiteBalance','白平衡']];
+const detailRows=rows=>rows.map(([label,value])=>`<div><dt>${escapeHTML(label)}</dt><dd>${escapeHTML(value)}</dd></div>`).join('');
+function showPhoto(photo){
+  $('#full-photo').src=photo.preview;$('#full-photo').alt=photo.name;
+  $('#photo-title').textContent=photo.name;
+  const metadata=photo.metadata||{};
+  const camera=cameraFields.filter(([key])=>metadata[key]).map(([key,label])=>[label,metadata[key]]);
+  $('#camera-details').innerHTML=detailRows(camera);$('#no-exif').hidden=camera.length>0;
+  const files=[['文件名',photo.filename||photo.name],['尺寸',`${photo.width} × ${photo.height} px`]];
+  if(photo.format)files.push(['格式',photo.format]);
+  if(photo.bytes)files.push(['文件大小',photo.bytes>=1048576?`${(photo.bytes/1048576).toFixed(2)} MB`:`${(photo.bytes/1024).toFixed(0)} KB`]);
+  $('#file-details').innerHTML=detailRows(files);$('#original').href=photo.original;$('#viewer').showModal();
+}
+$('#grid').onclick=e=>{const button=e.target.closest('[data-index]');if(!button)return;trigger=button;showPhoto(photos[Number(button.dataset.index)])};
 function close(){ $('#viewer').close();trigger?.focus() }
 $('.close').onclick=close;
 $('#viewer').addEventListener('click',e=>{if(e.target!==$('#viewer'))return;const r=$('#viewer').getBoundingClientRect();if(e.clientX<r.left||e.clientX>r.right||e.clientY<r.top||e.clientY>r.bottom)close()});
