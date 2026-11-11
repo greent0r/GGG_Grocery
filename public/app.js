@@ -6,7 +6,10 @@ async function load(){
   try{
     const response=await fetch('./photos.json',{cache:'no-cache'});
     if(!response.ok)throw Error('load');
-    photos=(await response.json()).photos;
+    photos=(await response.json()).photos.sort((a,b)=>{
+      const first=a.metadata?.capturedAt,second=b.metadata?.capturedAt;
+      return first&&second?first.localeCompare(second)||a.name.localeCompare(b.name):first?-1:second?1:a.name.localeCompare(b.name);
+    });
     $('#count').textContent=String(photos.length).padStart(2,'0');
     renderShelves();
     $('#empty').hidden=photos.length>0;
@@ -22,7 +25,7 @@ function renderShelves(){
     if(!groups.has(date))groups.set(date,[]);
     groups.get(date).push({photo,index});
   });
-  $('#grid').innerHTML=[...groups].sort(([a],[b])=>b.localeCompare(a)).map(([date,entries])=>{
+  $('#grid').innerHTML=[...groups].map(([date,entries])=>{
     const label=date?date.split('-').map(Number).join('/'):'未记录拍摄日期';
     const tiers=[];
     for(let start=0;start<entries.length;start+=columns){
