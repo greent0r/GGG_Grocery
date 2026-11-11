@@ -1,6 +1,6 @@
 const $=selector=>document.querySelector(selector);
 const escapeHTML=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-const owners={guigui:{name:'龟龟',number:'01'},xiaoqiu:{name:'小丘',number:'02'}};
+const owners={guigui:{name:'龟龟'},xiaoqiu:{name:'小丘'}};
 const shelfBreakpoints=[matchMedia('(max-width:540px)'),matchMedia('(max-width:800px)')];
 let photos=[],cabinetPhotos=[],currentOwner=null,loaded=false,trigger;
 function photoOwner(photo){return photo.owner||'guigui'}
@@ -16,7 +16,6 @@ async function load(){
 function renderStorefront(){
  for(const owner of Object.keys(owners)){
   const collection=photos.filter(p=>photoOwner(p)===owner);
-  $(`#${owner}-count`).textContent=`${String(collection.length).padStart(2,'0')} 张`;
   $(`#${owner}-preview`).innerHTML=collection.length?collection.slice(0,3).map(p=>`<span class="mini-print"><img src="${escapeHTML(p.thumbnail)}" alt="" loading="lazy" decoding="async"></span>`).join(''):'<span class="blank-print"></span><span class="blank-print second"></span><span class="mini-empty-label">暂无照片</span>';
  }
 }
@@ -27,8 +26,8 @@ function route(){
  document.title=currentOwner?`${owners[currentOwner].name}的货柜 · GGG杂货铺`:'GGG杂货铺';
  document.querySelectorAll('.owner-tabs [data-owner]').forEach(link=>{if(link.dataset.owner===currentOwner)link.setAttribute('aria-current','page');else link.removeAttribute('aria-current')});
  if(currentOwner){
-  const owner=owners[currentOwner];$('#cabinet-label').textContent=`相片货柜 / ${owner.number}`;$('#cabinet-title').textContent=`${owner.name}的相片货柜`;
-  cabinetPhotos=photos.filter(p=>photoOwner(p)===currentOwner);$('#count').textContent=loaded?String(cabinetPhotos.length).padStart(2,'0'):'…';
+  const owner=owners[currentOwner];$('#cabinet-title').textContent=`${owner.name}的相片货柜`;
+  cabinetPhotos=photos.filter(p=>photoOwner(p)===currentOwner);
   $('#empty').hidden=!loaded||cabinetPhotos.length>0;renderShelves();
  }
 }
