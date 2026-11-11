@@ -4,7 +4,7 @@
 
 ## 添加照片
 
-在 GitHub 中进入 `photos` 文件夹，选择 **Add file → Upload files**，上传照片并提交到 `main`。网站随后自动更新。
+原图按拍摄日期保存在 `photos/YYYY-MM-DD/`，例如 `photos/2026-11-09/`。在对应日期文件夹中选择 **Add file → Upload files**，上传原图并提交到 `main`，网站随后自动更新。较大的文件可以通过 Git 上传。
 
 支持 JPG、PNG、WebP、GIF 和 AVIF。每张照片自动生成缩略图和浏览大图；点击「查看原图」打开未经修改的原文件。删除仓库中的对应文件即可在下次发布时移除照片。
 
