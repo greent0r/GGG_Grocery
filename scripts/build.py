@@ -58,6 +58,8 @@ def build():
             (OUTPUT / "media" / directory).mkdir(parents=True, exist_ok=True)
         for source in images:
             relative = source.relative_to(ROOT / "photos").as_posix()
+            first_folder = source.relative_to(ROOT / "photos").parts[0]
+            owner = first_folder if first_folder in {"guigui", "xiaoqiu"} else "guigui"
             key = hashlib.sha256(relative.encode() + source.read_bytes()).hexdigest()[:24]
             original = f"media/originals/{key}{source.suffix.lower()}"
             shutil.copyfile(source, OUTPUT / original)
@@ -71,7 +73,7 @@ def build():
                     copy = image.copy()
                     copy.thumbnail((edge, edge))
                     copy.save(OUTPUT / "media" / directory / f"{key}.webp", quality=quality, method=6)
-            photos.append({"name": source.stem, "filename": source.name,
+            photos.append({"name": source.stem, "filename": source.name, "owner": owner,
                            "width": width, "height": height, "bytes": source.stat().st_size,
                            "format": image_format, "metadata": metadata,
                            "thumbnail": f"media/thumbnails/{key}.webp",

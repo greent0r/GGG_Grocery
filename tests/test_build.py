@@ -39,6 +39,7 @@ class PhotoBuildTest(unittest.TestCase):
         record = json.loads((self.root / "_site/photos.json").read_text(encoding="utf-8"))["photos"][0]
         self.assertEqual(record["name"], "测试照片")
         self.assertEqual(record["metadata"], {})
+        self.assertEqual(record["owner"], "guigui")
         self.assertEqual(hashlib.sha256((self.root / "_site" / record["original"]).read_bytes()).hexdigest(), expected)
         self.assertEqual(hashlib.sha256(original.read_bytes()).hexdigest(), expected)
         for key, maximum in (("thumbnail", 720), ("preview", 2400)):
@@ -65,6 +66,19 @@ class PhotoBuildTest(unittest.TestCase):
         self.assertEqual(record["filename"], "camera.jpg")
         self.assertEqual(record["bytes"], source.stat().st_size)
         self.assertEqual(record["format"], "JPEG")
+
+    def test_owner_folders_keep_same_named_photos_separate(self):
+        for owner, color in (("guigui", "blue"), ("xiaoqiu", "orange")):
+            folder = self.root / "photos" / owner / "2026-11-09"
+            folder.mkdir(parents=True)
+            Image.new("RGB", (80, 60), color).save(folder / "same-name.jpg")
+        self.module.build()
+        records = json.loads((self.root / "_site/photos.json").read_text(encoding="utf-8"))["photos"]
+        self.assertEqual({record["owner"] for record in records}, {"guigui", "xiaoqiu"})
+        self.assertEqual(len({record["original"] for record in records}), 2)
+        for record in records:
+            source = self.root / "photos" / record["owner"] / "2026-11-09/same-name.jpg"
+            self.assertEqual((self.root / "_site" / record["original"]).read_bytes(), source.read_bytes())
 
 
 if __name__ == "__main__":
