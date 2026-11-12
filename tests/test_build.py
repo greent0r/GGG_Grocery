@@ -80,6 +80,33 @@ class PhotoBuildTest(unittest.TestCase):
             source = self.root / "photos" / record["owner"] / "2026-11-09/same-name.jpg"
             self.assertEqual((self.root / "_site" / record["original"]).read_bytes(), source.read_bytes())
 
+    def test_colour_order_keeps_similar_tones_together_without_mixing_dates(self):
+        def photo(name, colour, day, owner="guigui"):
+            return {"name": name, "colour": colour, "owner": owner,
+                    "metadata": {"capturedAt": day}}
+        records = [photo("blue", [40, 5, -60, 5], "2026-11-09"),
+                   photo("orange", [60, 35, 40, 5], "2026-11-09"),
+                   photo("blue-light", [43, 6, -58, 5], "2026-11-09"),
+                   photo("orange-light", [63, 36, 42, 5], "2026-11-09"),
+                   photo("later", [40, 5, -60, 5], "2026-11-10"),
+                   photo("other-owner", [40, 5, -60, 5], "2026-11-09", "xiaoqiu")]
+        arranged = self.module.arrange_photos(records)
+        names = [record["name"] for record in arranged]
+        self.assertEqual(set(names), {record["name"] for record in records})
+        self.assertEqual(abs(names.index("blue") - names.index("blue-light")), 1)
+        self.assertEqual(abs(names.index("orange") - names.index("orange-light")), 1)
+        self.assertEqual(names[-2:], ["later", "other-owner"])
+
+    def test_corrupt_exif_uses_valid_xmp_without_inventing_camera_parameters(self):
+        image = Image.new("RGB", (80, 60), "orange")
+        image.getexif().update({42036: "\x01\x00", 33437: 0.02, 33434: 0.02})
+        image.info["xmp"] = '<root xmlns:xmp="urn:xmp" xmlns:aux="urn:aux" xmp:CreateDate="2026-11-11T17:20:28" aux:Lens="Canon 56mm" />'
+        metadata = self.module.camera_metadata(image)
+        self.assertEqual(metadata["capturedAt"], "2026-11-11 17:20:28")
+        self.assertEqual(metadata["lens"], "Canon 56mm")
+        self.assertNotIn("aperture", metadata)
+        self.assertNotIn("shutter", metadata)
+
 
 if __name__ == "__main__":
     unittest.main()
