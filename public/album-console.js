@@ -462,6 +462,7 @@
     ui.transferProgressBar = byId('transfer-progress-bar');
 
     initConvertTool();
+    byId('toggleDither').addEventListener('click', () => toggleDither());
     ui.open.addEventListener('click', openConsole);
     ui.close.addEventListener('click', closeConsole);
     ui.dialog.addEventListener('click', event => { if (event.target === ui.dialog) closeConsole(); });

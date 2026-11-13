@@ -34,7 +34,7 @@
           <span class="album-display-screen"><span>GGG</span><i></i><b></b></span>
           <span class="album-display-led"></span>
         </span>
-        <span class="album-display-caption"><strong>墙上相册</strong><small>点击管理</small></span>
+        <span class="album-display-caption"><strong>墙上相册</strong></span>
       </button>
     </div>
 
@@ -69,7 +69,7 @@
   <dialog id="album-console" aria-labelledby="album-console-title">
     <div class="album-shell">
       <header class="album-head">
-        <div><p class="album-eyebrow">GGG 杂货铺 · WALL EDITION</p><h2 id="album-console-title">电子相册管理</h2><p class="album-lede">把一张照片整理成设备能读的 Film，再送到墙上的相框。</p></div>
+        <div><h2 id="album-console-title">电子相册管理</h2></div>
         <button class="album-close" type="button" data-album-close aria-label="关闭电子相册管理">×</button>
       </header>
 
@@ -79,11 +79,10 @@
           <div class="album-device-status"><span id="album-status-dot" class="album-status-dot"></span><div><strong id="album-connection-status">等待连接</strong><p id="album-device-name">请在相框附近操作</p></div></div>
           <div class="album-device-meta"><span>型号</span><strong id="album-device-type">—</strong><span>屏幕</span><strong id="album-device-resolution">—</strong></div>
           <div class="album-actions"><button id="album-connect" class="album-button album-button-primary" type="button">连接设备</button><button id="album-reconnect" class="album-button" type="button">重连上次设备</button><button id="album-disconnect" class="album-button album-button-quiet" type="button" hidden>断开连接</button></div>
-          <p class="album-hint">支持名称以 FRAMEFILM 开头的设备。蓝牙只在 HTTPS 或 localhost 的 Chrome / Edge 中可用。</p>
         </section>
 
         <section class="album-card album-film-card" aria-labelledby="album-film-title">
-          <div class="album-card-title"><span class="album-icon album-icon-warm" aria-hidden="true">✦</span><div><p class="album-card-kicker">02 · Film</p><h3 id="album-film-title">转换并上传照片</h3></div><span class="album-mini-note">本地处理</span></div>
+          <div class="album-card-title"><span class="album-icon album-icon-warm" aria-hidden="true">✦</span><div><p class="album-card-kicker">02 · Film</p><h3 id="album-film-title">转换并上传照片</h3></div></div>
           <div class="album-film-layout">
             <div class="album-preview-column">
               <div class="album-preview-label"><span>设备预览</span><span id="album-preview-size">600 × 400</span></div>
@@ -92,7 +91,7 @@
             </div>
             <div class="album-film-form">
               <input id="imageFile" type="file" accept="image/*" hidden>
-              <label class="album-dropzone" for="imageFile"><span class="album-upload-glyph" aria-hidden="true">↑</span><strong>选择照片</strong><small>JPG / PNG / WebP 等，图片只在浏览器本地处理</small></label>
+              <label class="album-dropzone" for="imageFile"><span class="album-upload-glyph" aria-hidden="true">↑</span><strong>选择照片</strong></label>
               <div class="album-fields">
                 <label>抖动算法<select id="ditherType"><option value="floydSteinberg">Floyd–Steinberg · 推荐</option><option value="atkinson">Atkinson</option><option value="stucki">Stucki</option><option value="jarvis">Jarvis–Judice–Ninke</option><option value="adaptive">自适应</option><option value="bayer">Bayer</option></select></label>
                 <label id="ditherStrengthContainer">强度 <output id="ditherStrengthValue">1</output><input id="ditherStrength" type="range" min="0.2" max="2" step="0.1" value="1"></label>
@@ -107,14 +106,13 @@
           </div>
         </section>
       </div>
-      <footer class="album-footnote"><span class="album-footnote-mark">GGG</span><span>只保留两件事：连接设备 · 转换并上传 Film。照片不会上传到店铺服务器。</span></footer>
     </div>
   </dialog>
 
-  <script src="./forfilm-utils.js?v=20261113"></script>
-  <script src="./forfilm-convert.js?v=20261113"></script>
-  <script src="./forfilm-ark-device.js?v=20261113"></script>
+  <script src="./forfilm-utils.js?v=20261114"></script>
+  <script src="./forfilm-convert.js?v=20261114"></script>
+  <script src="./forfilm-ark-device.js?v=20261114"></script>
   <script src="./app.js?v=20261112-interior"></script>
-  <script src="./album-console.js?v=20261113"></script>
+  <script src="./album-console.js?v=20261114-dither"></script>
 </body>
 </html>
