@@ -1,0 +1,2333 @@
+// 照片转换功能
+
+// 全局变量
+var currentImageData = null;
+var isDitheringEnabled = false;
+var canvasRotation = 0; // 0: 原始, 1: 旋转90度
+var scale = 1.0;
+var offsetX = 0;
+var offsetY = 0;
+var isDragging = false;
+var startX = 0;
+var startY = 0;
+var startOffsetX = 0;
+var startOffsetY = 0;
+var originalImage = null;
+var uploadedFileName = 'output';
+window.processedDataForDownload = null;
+
+// 拖动偏移换算：横屏设备画布被 CSS rotate(90deg) 显示，竖屏设备（Max）不旋转。
+// 两种显示方式下 canvasRotation 对应的坐标映射不同，需分别换算，使拖动方向与视觉一致。
+function applyDragOffset(deltaX, deltaY) {
+    var cssRotated = !isPortraitDevice(); // 画布是否被 CSS 旋转 90° 显示
+    if (canvasRotation === 1) {
+        if (cssRotated) {
+            offsetX = startOffsetX + deltaX;
+            offsetY = startOffsetY + deltaY;
+        } else {
+            offsetX = startOffsetX - deltaY;
+            offsetY = startOffsetY + deltaX;
+        }
+    } else {
+        if (cssRotated) {
+            offsetX = startOffsetX + deltaY;
+            offsetY = startOffsetY - deltaX;
+        } else {
+            offsetX = startOffsetX + deltaX;
+            offsetY = startOffsetY + deltaY;
+        }
+    }
+}
+
+// Film 文件头大小（固定 32 字节）
+var FILM_HEADER_SIZE = 32;
+
+// 颜色编码索引（对应 ColorTable 的位置）
+const COLOR_CODE_BLACK = 0x00;
+const COLOR_CODE_WHITE = 0x01;
+const COLOR_CODE_YELLOW = 0x02;
+const COLOR_CODE_RED = 0x03;
+const COLOR_CODE_BLUE = 0x04;
+const COLOR_CODE_GREEN = 0x05;
+
+// 固定的六色调色板（带颜色编码索引）
+const rgbPalette = [
+    { name: "黑色", r: 0, g: 0, b: 0, value: 0x00, code: COLOR_CODE_BLACK },
+    { name: "白色", r: 255, g: 255, b: 255, value: 0xff, code: COLOR_CODE_WHITE },
+    { name: "黄色", r: 255, g: 255, b: 0, value: 0xfc, code: COLOR_CODE_YELLOW },
+    { name: "红色", r: 255, g: 0, b: 0, value: 0xe0, code: COLOR_CODE_RED },
+    { name: "蓝色", r: 0, g: 0, b: 255, value: 0x03, code: COLOR_CODE_BLUE },
+    { name: "绿色", r: 41, g: 204, b: 20, value: 0x1c, code: COLOR_CODE_GREEN }
+];
+
+// SZ 增强不使用对比度/饱和度（输入为原始 cover 图），选中时隐藏相应滑块
+function syncAdjustSliders() {
+    var ditherType = document.getElementById('ditherType').value;
+    document.getElementById('ditherStrengthContainer').style.display =
+        (ditherType === 'adaptive' || ditherType === 'atkinsonEnhanced' || ditherType === 'szEnhanced' || ditherType === 'atkinsonSzCalib') ? 'none' : '';
+    var colorAdjust = document.getElementById('colorAdjustContainer');
+    if (colorAdjust) {
+        colorAdjust.style.display = (ditherType === 'szEnhanced') ? 'none' : '';
+    }
+}
+
+// 8bpp 索引色（ColorFast 55 色 / ColorQual 46 色）当前**只对通行证版（ARK）开放**，
+// 判据见 is8bppAvailable()（屏幕 720×480 + 机型 FRAMEFILMARK）；
+// 不支持时禁用这两个选项并回退到 Floyd-Steinberg。
+function sync8bppAvailability() {
+    var select = document.getElementById('ditherType');
+    if (!select) {
+        return;
+    }
+    var supported = is8bppAvailable();
+    Object.keys(CF_PROFILES).forEach(function(key) {
+        var option = select.querySelector('option[value="' + key + '"]');
+        if (option) {
+            option.disabled = !supported;
+        }
+    });
+    if (CF_PROFILES[select.value] && !supported) {
+        select.value = 'floydSteinberg';
+        syncAdjustSliders();
+    }
+    var hint = document.getElementById('bpp8Hint');
+    var profile = CF_PROFILES[select.value];
+    if (hint) {
+        hint.textContent = profile
+            ? '输出 ' + profile.label + ' 单帧，仅通行证版（Ark，3.7 寸 720×480）可渲染'
+            : '';
+        hint.style.display = profile ? '' : 'none';
+    }
+}
+
+function initConvertTool() {
+    // 事件监听器
+    document.getElementById('imageFile').addEventListener('change', handleFileUpload);
+    document.getElementById('ditherStrength').addEventListener('input', function() {
+        document.getElementById('ditherStrengthValue').textContent = this.value;
+        debounceUpdateImage();
+    });
+    document.getElementById('contrast').addEventListener('input', function() {
+        document.getElementById('contrastValue').textContent = this.value;
+        debounceUpdateImage();
+    });
+    document.getElementById('saturation').addEventListener('input', function() {
+        document.getElementById('saturationValue').textContent = this.value;
+        debounceUpdateImage();
+    });
+    document.getElementById('ditherType').addEventListener('change', function() {
+        syncAdjustSliders();
+        sync8bppAvailability();
+        debounceUpdateImage();
+    });
+    syncAdjustSliders();
+
+    // SZ 增强算法仅 Pro 可用（默认机型非 Pro，选项保持禁用）
+    syncSzEnhancedAvailability();
+
+    // 8bpp 索引色（ColorFast / ColorQual）仅 3.7" 720×480 屏可用
+    sync8bppAvailability();
+    
+    // 鼠标滚轮缩放功能
+    const canvas = document.getElementById('canvas');
+    canvas.addEventListener('wheel', function(e) {
+        if (!isDitheringEnabled) {
+            e.preventDefault();
+            const scaleFactor = e.deltaY > 0 ? 0.9 : 1.1;
+            const newScale = Math.max(0.05, Math.min(10, scale * scaleFactor));
+            
+            // 计算鼠标在画布上的位置
+            const rect = canvas.getBoundingClientRect();
+            const mouseX = e.clientX - rect.left;
+            const mouseY = e.clientY - rect.top;
+            
+            // 调整偏移量，使缩放以鼠标位置为中心
+            var relativeX = mouseX / getCanvasWidth();
+            var relativeY = mouseY / getCanvasHeight();
+            
+            const oldWidth = originalImage.width * scale;
+            const oldHeight = originalImage.height * scale;
+            const newWidth = originalImage.width * newScale;
+            const newHeight = originalImage.height * newScale;
+            
+            offsetX = relativeX * (newWidth - oldWidth) + offsetX;
+            offsetY = relativeY * (newHeight - oldHeight) + offsetY;
+            
+            scale = newScale;
+            updateImage();
+        }
+    });
+    
+    // 鼠标拖动功能
+    canvas.addEventListener('mousedown', function(e) {
+        if (!isDitheringEnabled) {
+            isDragging = true;
+            startX = e.clientX;
+            startY = e.clientY;
+            startOffsetX = offsetX;
+            startOffsetY = offsetY;
+        }
+    });
+
+    canvas.addEventListener('mousemove', function(e) {
+        if (isDragging && !isDitheringEnabled) {
+            // 计算鼠标移动距离
+            const deltaX = e.clientX - startX;
+            const deltaY = e.clientY - startY;
+            
+            // 根据画布显示方式与旋转状态换算偏移，使拖动方向与视觉一致
+            applyDragOffset(deltaX, deltaY);
+            
+            updateImage();
+        }
+    });
+    
+    canvas.addEventListener('mouseup', function() {
+        isDragging = false;
+    });
+    
+    canvas.addEventListener('mouseleave', function() {
+        isDragging = false;
+    });
+
+    // 触摸事件支持（移动端）
+    let touchStartX = 0;
+    let touchStartY = 0;
+    let touchStartDistance = 0;
+    let isPinching = false;
+
+    canvas.addEventListener('touchstart', function(e) {
+        if (!isDitheringEnabled) {
+            if (e.touches.length === 1) {
+                isDragging = true;
+                startX = e.touches[0].clientX;
+                startY = e.touches[0].clientY;
+                startOffsetX = offsetX;
+                startOffsetY = offsetY;
+            } else if (e.touches.length === 2) {
+                isPinching = true;
+                const touch1 = e.touches[0];
+                const touch2 = e.touches[1];
+                touchStartDistance = Math.sqrt(
+                    Math.pow(touch2.clientX - touch1.clientX, 2) +
+                    Math.pow(touch2.clientY - touch1.clientY, 2)
+                );
+            }
+            e.preventDefault();
+        }
+    });
+
+    canvas.addEventListener('touchmove', function(e) {
+        if (isDitheringEnabled) return;
+        
+        if (e.touches.length === 1 && isDragging) {
+            // 单指拖动
+            const deltaX = e.touches[0].clientX - startX;
+            const deltaY = e.touches[0].clientY - startY;
+            
+            applyDragOffset(deltaX, deltaY);
+            
+            updateImage();
+        } else if (e.touches.length === 2 && isPinching) {
+            // 双指缩放
+            const touch1 = e.touches[0];
+            const touch2 = e.touches[1];
+            const currentDistance = Math.sqrt(
+                Math.pow(touch2.clientX - touch1.clientX, 2) +
+                Math.pow(touch2.clientY - touch1.clientY, 2)
+            );
+            
+            const scaleFactor = currentDistance / touchStartDistance;
+            const newScale = Math.max(0.05, Math.min(10, scale * scaleFactor));
+            
+            // 计算触摸中心点
+            const centerX = (touch1.clientX + touch2.clientX) / 2;
+            const centerY = (touch1.clientY + touch2.clientY) / 2;
+            const rect = canvas.getBoundingClientRect();
+            var relativeX = (centerX - rect.left) / getCanvasWidth();
+            var relativeY = (centerY - rect.top) / getCanvasHeight();
+            
+            const oldWidth = originalImage.width * scale;
+            const oldHeight = originalImage.height * scale;
+            const newWidth = originalImage.width * newScale;
+            const newHeight = originalImage.height * newScale;
+            
+            offsetX = relativeX * (newWidth - oldWidth) + offsetX;
+            offsetY = relativeY * (newHeight - oldHeight) + offsetY;
+            
+            scale = newScale;
+            touchStartDistance = currentDistance;
+            updateImage();
+        }
+        e.preventDefault();
+    });
+
+    canvas.addEventListener('touchend', function(e) {
+        isDragging = false;
+        isPinching = false;
+    });
+
+    updateCanvasScale();
+    window.addEventListener('resize', updateCanvasScale);
+}
+
+function downloadFile(data, fileName) {
+    const blob = new Blob([data], { type: 'application/octet-stream' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = fileName;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+}
+
+// 生成 Film 文件头（32字节）
+function generateFilmHeader() {
+    var screenWidth = getCanvasWidth();
+    var screenHeight = getCanvasHeight();
+    var pixelDataSize = getFilmPixelDataSize();
+    var header = new Array(FILM_HEADER_SIZE).fill(0);
+
+    // FileSize (4 bytes) - 小端序
+    var fileSize = pixelDataSize;
+    header[0] = fileSize & 0xFF;
+    header[1] = (fileSize >> 8) & 0xFF;
+    header[2] = (fileSize >> 16) & 0xFF;
+    header[3] = (fileSize >> 24) & 0xFF;
+
+    // ScreenWidth (2 bytes) - 小端序
+    header[4] = screenWidth & 0xFF;
+    header[5] = (screenWidth >> 8) & 0xFF;
+
+    // ScreenHeight (2 bytes) - 小端序
+    header[6] = screenHeight & 0xFF;
+    header[7] = (screenHeight >> 8) & 0xFF;
+
+    // ColorCount (1 byte) - 6色
+    header[8] = 6;
+
+    // Reserved (7 bytes) - 保留字段，填充0
+    // header[9] 到 header[15] 保持为0
+
+    // ColorTable (16 bytes) - 颜色编码映射表
+    // ColorTable[编码索引] = 实际颜色值（color_get 函数接收的输入）
+    // 根据 hal_epd.c 中 color_get 的定义：
+    // 0x00 -> Black, 0xFF -> White, 0xFC -> Yellow, 0xE0 -> Red, 0x03 -> Blue, 0x1C -> Green
+    header[16] = 0x00;  // 编码0 -> 黑色 0x00
+    header[17] = 0xFF;  // 编码1 -> 白色 0xFF
+    header[18] = 0xFC;  // 编码2 -> 黄色 0xFC
+    header[19] = 0xE0;  // 编码3 -> 红色 0xE0
+    header[20] = 0x03;  // 编码4 -> 蓝色 0x03
+    header[21] = 0x1C;  // 编码5 -> 绿色 0x1C
+    // header[22] 到 header[31] 保持为0（未使用）
+
+    return new Uint8Array(header);
+}
+
+function handleFileUpload(event) {
+    const file = event.target.files[0];
+    event.target.value = '';
+
+    const fileNameWithoutExt = file.name.replace(/\.[^/.]+$/, '');
+    uploadedFileName = fileNameWithoutExt || 'output';
+
+    const reader = new FileReader();
+
+    reader.onload = function (e) {
+        const img = new Image();
+        img.onload = function () {
+            originalImage = img;
+
+            var canvas = document.getElementById('canvas');
+            var canvasWidth = getCanvasWidth();
+            var canvasHeight = getCanvasHeight();
+
+            var imgWidth = img.width;
+            var imgHeight = img.height;
+
+            // 竖屏设备（Max）：横图旋转 90°，竖图直接显示；横向设备：竖图旋转
+            canvasRotation = isPortraitDevice()
+                ? (imgWidth > imgHeight ? 1 : 0)
+                : (imgHeight > imgWidth ? 1 : 0);
+
+            let effectiveWidth = canvasWidth;
+            let effectiveHeight = canvasHeight;
+            if (canvasRotation === 1) {
+                effectiveWidth = canvasHeight;
+                effectiveHeight = canvasWidth;
+            }
+
+            const scaleX = effectiveWidth / imgWidth;
+            const scaleY = effectiveHeight / imgHeight;
+            scale = Math.min(scaleX, scaleY);
+
+            offsetX = 0;
+            offsetY = 0;
+
+            document.getElementById('fileName').value = uploadedFileName + '.film';
+            updateImage();
+        };
+        img.src = e.target.result;
+    };
+    reader.readAsDataURL(file);
+}
+
+function toggleDither() {
+    isDitheringEnabled = !isDitheringEnabled;
+    const toggleButton = document.getElementById('toggleDither');
+    toggleButton.textContent = isDitheringEnabled ? '禁用抖动' : '启用抖动';
+    toggleButton.classList.toggle('active', isDitheringEnabled);
+    updateImage();
+}
+
+function resetImage() {
+    currentImageData = null;
+    originalImage = null;
+    uploadedFileName = 'output';
+    canvasRotation = 0;
+    scale = 1.0;
+    offsetX = 0;
+    offsetY = 0;
+    isDragging = false;
+    startX = 0;
+    startY = 0;
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, getCanvasWidth(), getCanvasHeight());
+    document.getElementById('imageResult').innerHTML = '';
+    document.getElementById('fileName').value = 'output.film';
+}
+
+function rotateCanvas() {
+    canvasRotation = (canvasRotation + 1) % 2;
+
+    var canvas = document.getElementById('canvas');
+    var canvasWidth = getCanvasWidth();
+    var canvasHeight = getCanvasHeight();
+    var effectiveWidth, effectiveHeight;
+    if (canvasRotation === 0) {
+        effectiveWidth = canvasWidth;
+        effectiveHeight = canvasHeight;
+    } else {
+        effectiveWidth = canvasHeight;
+        effectiveHeight = canvasWidth;
+    }
+
+    const imgWidth = originalImage.width * scale;
+    const imgHeight = originalImage.height * scale;
+
+    const scaleX = effectiveWidth / originalImage.width;
+    const scaleY = effectiveHeight / originalImage.height;
+    const newScale = Math.min(scaleX, scaleY, 1);
+
+    scale = newScale;
+
+    const scaledWidth = originalImage.width * scale;
+    const scaledHeight = originalImage.height * scale;
+    offsetX = (effectiveWidth - scaledWidth) / 2;
+    offsetY = (effectiveHeight - scaledHeight) / 2;
+
+    updateImage();
+}
+
+let _rafId = null;
+let _debounceTimer = null;
+function debounceUpdateImage() {
+    if (_debounceTimer) clearTimeout(_debounceTimer);
+    _debounceTimer = setTimeout(function() {
+        updateImage();
+    }, 150);
+}
+
+function resetZoom() {
+    if (!originalImage) return;
+    var canvas = document.getElementById('canvas');
+    var canvasWidth = getCanvasWidth();
+    var canvasHeight = getCanvasHeight();
+    var effectiveWidth = canvasRotation === 1 ? canvasHeight : canvasWidth;
+    var effectiveHeight = canvasRotation === 1 ? canvasWidth : canvasHeight;
+    const scaleX = effectiveWidth / originalImage.width;
+    const scaleY = effectiveHeight / originalImage.height;
+    scale = Math.min(scaleX, scaleY);
+    offsetX = 0;
+    offsetY = 0;
+    updateImage();
+}
+
+function updateImage() {
+    if (!originalImage) return;
+
+    var canvas = document.getElementById('canvas');
+    var canvasWidth = getCanvasWidth();
+    var canvasHeight = getCanvasHeight();
+    canvas.width = canvasWidth;
+    canvas.height = canvasHeight;
+    var ctx = canvas.getContext('2d');
+
+    // 清除画布
+    ctx.clearRect(0, 0, canvasWidth, canvasHeight);
+
+    // 保存当前状态
+    ctx.save();
+
+    let effectiveWidth = canvasWidth;
+    let effectiveHeight = canvasHeight;
+
+    // 处理旋转
+    if (canvasRotation === 1) {
+        // 旋转-90度（向左旋转）
+        ctx.translate(0, canvasHeight);
+        ctx.rotate(-Math.PI / 2);
+        // 交换宽高
+        effectiveWidth = canvasHeight;
+        effectiveHeight = canvasWidth;
+    }
+
+    // 白色填充背景
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, effectiveWidth, effectiveHeight);
+
+    // 计算缩放后的图像尺寸
+    const imgWidth = originalImage.width * scale;
+    const imgHeight = originalImage.height * scale;
+
+    // 计算绘制位置（考虑偏移量）
+    let drawX = (effectiveWidth - imgWidth) / 2 + offsetX;
+    let drawY = (effectiveHeight - imgHeight) / 2 + offsetY;
+
+    // 绘制图像
+    ctx.drawImage(
+        originalImage,
+        0, 0,
+        originalImage.width, originalImage.height,
+        drawX, drawY,
+        imgWidth, imgHeight
+    );
+
+    // 恢复状态
+    ctx.restore();
+
+    // 获取绘制后的图像数据
+    currentImageData = ctx.getImageData(0, 0, canvasWidth, canvasHeight);
+
+    // 应用对比度调整
+    const contrastFactor = parseFloat(document.getElementById('contrast').value);
+    const imageData = new ImageData(
+        new Uint8ClampedArray(currentImageData.data),
+        currentImageData.width,
+        currentImageData.height
+    );
+    adjustContrast(imageData, contrastFactor);
+
+    // 应用饱和度调整
+    const saturationFactor = parseFloat(document.getElementById('saturation').value);
+    adjustSaturation(imageData, saturationFactor);
+
+    // 根据状态应用抖动或显示原始图像
+    // 8bpp 索引色算法始终要出量化结果，关闭抖动时按最近色取整（预览与打包一致）
+    const bpp8Profile = getActive8bppProfile();
+    if (isDitheringEnabled || bpp8Profile) {
+        const processedImageData = ditherImage(imageData);
+        const processedData = bpp8Profile
+            ? processImageData8bpp(processedImageData, bpp8Profile)
+            : processImageData(processedImageData);
+        const finalImageData = bpp8Profile
+            ? decodeProcessedData8bpp(processedData, canvasWidth, canvasHeight, bpp8Profile)
+            : decodeProcessedData(processedData, canvasWidth, canvasHeight);
+        ctx.putImageData(finalImageData, 0, 0);
+
+        const ditherType = document.getElementById('ditherType').value;
+        if (ditherType === 'adaptive' && window._adaptiveConfig) {
+            const cfg = window._adaptiveConfig;
+            const algoNames = { floydSteinberg: 'Floyd-Steinberg', atkinson: 'Atkinson', stucki: 'Stucki', jarvis: 'Jarvis-Judice-Ninke' };
+            document.getElementById('imageResult').innerHTML =
+                '<div class="info">自适应选择：' + algoNames[cfg.type] + '，强度 ' + cfg.strength.toFixed(1) + '</div>';
+        }
+    } else {
+        ctx.putImageData(imageData, 0, 0);
+    }
+    updateCanvasScale();
+}
+
+function adjustContrast(imageData, factor) {
+    const data = imageData.data;
+    for (let i = 0; i < data.length; i += 4) {
+        data[i] = Math.min(255, Math.max(0, (data[i] - 128) * factor + 128));
+        data[i + 1] = Math.min(255, Math.max(0, (data[i + 1] - 128) * factor + 128));
+        data[i + 2] = Math.min(255, Math.max(0, (data[i + 2] - 128) * factor + 128));
+    }
+    return imageData;
+}
+
+function adjustSaturation(imageData, factor) {
+    const data = imageData.data;
+    for (let i = 0; i < data.length; i += 4) {
+        const r = data[i];
+        const g = data[i + 1];
+        const b = data[i + 2];
+        const gray = 0.299 * r + 0.587 * g + 0.114 * b;
+        data[i] = Math.min(255, Math.max(0, gray + (r - gray) * factor));
+        data[i + 1] = Math.min(255, Math.max(0, gray + (g - gray) * factor));
+        data[i + 2] = Math.min(255, Math.max(0, gray + (b - gray) * factor));
+    }
+    return imageData;
+}
+
+function rgbToLab(r, g, b) {
+    r = r / 255;
+    g = g / 255;
+    b = b / 255;
+
+    r = r > 0.04045 ? Math.pow((r + 0.055) / 1.055, 2.4) : r / 12.92;
+    g = g > 0.04045 ? Math.pow((g + 0.055) / 1.055, 2.4) : g / 12.92;
+    b = b > 0.04045 ? Math.pow((b + 0.055) / 1.055, 2.4) : b / 12.92;
+
+    r *= 100;
+    g *= 100;
+    b *= 100;
+
+    let x = r * 0.4124 + g * 0.3576 + b * 0.1805;
+    let y = r * 0.2126 + g * 0.7152 + b * 0.0722;
+    let z = r * 0.0193 + g * 0.1192 + b * 0.9505;
+
+    x /= 95.047;
+    y /= 100.0;
+    z /= 108.883;
+
+    x = x > 0.008856 ? Math.pow(x, 1/3) : (7.787 * x) + (16 / 116);
+    y = y > 0.008856 ? Math.pow(y, 1/3) : (7.787 * y) + (16 / 116);
+    z = z > 0.008856 ? Math.pow(z, 1/3) : (7.787 * z) + (16 / 116);
+
+    const l = (116 * y) - 16;
+    const a = 500 * (x - y);
+    const bLab = 200 * (y - z);
+
+    return { l, a, b: bLab };
+}
+
+function labDistance(lab1, lab2) {
+    const dl = lab1.l - lab2.l;
+    const da = lab1.a - lab2.a;
+    const db = lab1.b - lab2.b;
+    return Math.sqrt(dl * dl + da * da + db * db);
+}
+
+// sRGB <-> 线性空间转换表（gamma 感知抖动用，参考 Caster degamma.v）
+var SRGB_TO_LINEAR_LUT = new Float32Array(256);
+var LINEAR_TO_SRGB_LUT = new Uint8Array(256);
+(function() {
+    for (var i = 0; i < 256; i++) {
+        var v = i / 255;
+        SRGB_TO_LINEAR_LUT[i] = v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
+    }
+    for (var i = 0; i < 256; i++) {
+        var v = i / 255;
+        var srgb = v <= 0.0031308 ? v * 12.92 : 1.055 * Math.pow(v, 1 / 2.4) - 0.055;
+        LINEAR_TO_SRGB_LUT[i] = Math.round(srgb * 255);
+    }
+})();
+
+function srgbToLinear(c) {
+    return SRGB_TO_LINEAR_LUT[c];
+}
+
+function linearToSrgb(c) {
+    var clamped = Math.max(0, Math.min(1, c));
+    return LINEAR_TO_SRGB_LUT[Math.round(clamped * 255)];
+}
+
+function rgbToHsl(r, g, b) {
+    r /= 255; g /= 255; b /= 255;
+    const max = Math.max(r, g, b);
+    const min = Math.min(r, g, b);
+    let h = 0, s = 0, l = (max + min) / 2;
+
+    if (max !== min) {
+        const d = max - min;
+        s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+        switch (max) {
+            case r: h = ((g - b) / d + (g < b ? 6 : 0)) / 6; break;
+            case g: h = ((b - r) / d + 2) / 6; break;
+            case b: h = ((r - g) / d + 4) / 6; break;
+        }
+    }
+    return { h: h * 360, s: s, l: l };
+}
+
+const paletteHsl = rgbPalette.map(function(c) {
+    return { color: c, hsl: rgbToHsl(c.r, c.g, c.b) };
+});
+
+function findClosestColor(r, g, b) {
+    const input = rgbToHsl(r, g, b);
+
+    if (input.s < 0.12) {
+        return input.l > 0.5 ? rgbPalette[1] : rgbPalette[0];
+    }
+
+    let minDist = Infinity;
+    let closestColor = rgbPalette[0];
+
+    for (let i = 2; i < paletteHsl.length; i++) {
+        const p = paletteHsl[i];
+        let hueDiff = Math.abs(input.h - p.hsl.h);
+        if (hueDiff > 180) hueDiff = 360 - hueDiff;
+        const satDiff = Math.abs(input.s - p.hsl.s);
+        const lumDiff = Math.abs(input.l - p.hsl.l);
+        const dist = hueDiff + satDiff * 120 + lumDiff * 80;
+        if (dist < minDist) {
+            minDist = dist;
+            closestColor = p.color;
+        }
+    }
+
+    const labInput = rgbToLab(r, g, b);
+    const labBlack = rgbToLab(0, 0, 0);
+    const labWhite = rgbToLab(255, 255, 255);
+    const distBlack = labDistance(labInput, labBlack);
+    const distWhite = labDistance(labInput, labWhite);
+    const distNeutral = Math.min(distBlack, distWhite);
+    const neutralColor = distBlack < distWhite ? rgbPalette[0] : rgbPalette[1];
+
+    const labChosen = rgbToLab(closestColor.r, closestColor.g, closestColor.b);
+    const distChosen = labDistance(labInput, labChosen);
+
+    if (distNeutral < distChosen * 0.45) {
+        return neutralColor;
+    }
+
+    return closestColor;
+}
+
+function floydSteinbergDither(imageData, strength) {
+    const width = imageData.width;
+    const height = imageData.height;
+    const data = imageData.data;
+    const tempData = new Uint8ClampedArray(data);
+
+    for (let y = 0; y < height; y++) {
+        for (let x = 0; x < width; x++) {
+            const idx = (y * width + x) * 4;
+            const r = tempData[idx];
+            const g = tempData[idx + 1];
+            const b = tempData[idx + 2];
+
+            const closest = findClosestColor(r, g, b);
+
+            const errR = (r - closest.r) * strength;
+            const errG = (g - closest.g) * strength;
+            const errB = (b - closest.b) * strength;
+
+            if (x + 1 < width) {
+                const idxRight = idx + 4;
+                tempData[idxRight] = Math.min(255, Math.max(0, tempData[idxRight] + errR * 7 / 16));
+                tempData[idxRight + 1] = Math.min(255, Math.max(0, tempData[idxRight + 1] + errG * 7 / 16));
+                tempData[idxRight + 2] = Math.min(255, Math.max(0, tempData[idxRight + 2] + errB * 7 / 16));
+            }
+            if (y + 1 < height) {
+                if (x > 0) {
+                    const idxDownLeft = idx + width * 4 - 4;
+                    tempData[idxDownLeft] = Math.min(255, Math.max(0, tempData[idxDownLeft] + errR * 3 / 16));
+                    tempData[idxDownLeft + 1] = Math.min(255, Math.max(0, tempData[idxDownLeft + 1] + errG * 3 / 16));
+                    tempData[idxDownLeft + 2] = Math.min(255, Math.max(0, tempData[idxDownLeft + 2] + errB * 3 / 16));
+                }
+                const idxDown = idx + width * 4;
+                tempData[idxDown] = Math.min(255, Math.max(0, tempData[idxDown] + errR * 5 / 16));
+                tempData[idxDown + 1] = Math.min(255, Math.max(0, tempData[idxDown + 1] + errG * 5 / 16));
+                tempData[idxDown + 2] = Math.min(255, Math.max(0, tempData[idxDown + 2] + errB * 5 / 16));
+                if (x + 1 < width) {
+                    const idxDownRight = idx + width * 4 + 4;
+                    tempData[idxDownRight] = Math.min(255, Math.max(0, tempData[idxDownRight] + errR * 1 / 16));
+                    tempData[idxDownRight + 1] = Math.min(255, Math.max(0, tempData[idxDownRight + 1] + errG * 1 / 16));
+                    tempData[idxDownRight + 2] = Math.min(255, Math.max(0, tempData[idxDownRight + 2] + errB * 1 / 16));
+                }
+            }
+        }
+    }
+
+    for (let y = 0; y < height; y++) {
+        for (let x = 0; x < width; x++) {
+            const idx = (y * width + x) * 4;
+            const r = tempData[idx];
+            const g = tempData[idx + 1];
+            const b = tempData[idx + 2];
+
+            const closest = findClosestColor(r, g, b);
+            data[idx] = closest.r;
+            data[idx + 1] = closest.g;
+            data[idx + 2] = closest.b;
+        }
+    }
+
+    return imageData;
+}
+
+function atkinsonDither(imageData, strength) {
+    const width = imageData.width;
+    const height = imageData.height;
+    const data = imageData.data;
+    const tempData = new Uint8ClampedArray(data);
+
+    for (let y = 0; y < height; y++) {
+        for (let x = 0; x < width; x++) {
+            const idx = (y * width + x) * 4;
+            const r = tempData[idx];
+            const g = tempData[idx + 1];
+            const b = tempData[idx + 2];
+
+            const closest = findClosestColor(r, g, b);
+
+            data[idx] = closest.r;
+            data[idx + 1] = closest.g;
+            data[idx + 2] = closest.b;
+
+            const errR = (r - closest.r) * strength;
+            const errG = (g - closest.g) * strength;
+            const errB = (b - closest.b) * strength;
+
+            const fraction = 1 / 8;
+
+            if (x + 1 < width) {
+                const idxRight = idx + 4;
+                tempData[idxRight] = Math.min(255, Math.max(0, tempData[idxRight] + errR * fraction));
+                tempData[idxRight + 1] = Math.min(255, Math.max(0, tempData[idxRight + 1] + errG * fraction));
+                tempData[idxRight + 2] = Math.min(255, Math.max(0, tempData[idxRight + 2] + errB * fraction));
+            }
+            if (x + 2 < width) {
+                const idxRight2 = idx + 8;
+                tempData[idxRight2] = Math.min(255, Math.max(0, tempData[idxRight2] + errR * fraction));
+                tempData[idxRight2 + 1] = Math.min(255, Math.max(0, tempData[idxRight2 + 1] + errG * fraction));
+                tempData[idxRight2 + 2] = Math.min(255, Math.max(0, tempData[idxRight2 + 2] + errB * fraction));
+            }
+            if (y + 1 < height) {
+                if (x > 0) {
+                    const idxDownLeft = idx + width * 4 - 4;
+                    tempData[idxDownLeft] = Math.min(255, Math.max(0, tempData[idxDownLeft] + errR * fraction));
+                    tempData[idxDownLeft + 1] = Math.min(255, Math.max(0, tempData[idxDownLeft + 1] + errG * fraction));
+                    tempData[idxDownLeft + 2] = Math.min(255, Math.max(0, tempData[idxDownLeft + 2] + errB * fraction));
+                }
+                const idxDown = idx + width * 4;
+                tempData[idxDown] = Math.min(255, Math.max(0, tempData[idxDown] + errR * fraction));
+                tempData[idxDown + 1] = Math.min(255, Math.max(0, tempData[idxDown + 1] + errG * fraction));
+                tempData[idxDown + 2] = Math.min(255, Math.max(0, tempData[idxDown + 2] + errB * fraction));
+                if (x + 1 < width) {
+                    const idxDownRight = idx + width * 4 + 4;
+                    tempData[idxDownRight] = Math.min(255, Math.max(0, tempData[idxDownRight] + errR * fraction));
+                    tempData[idxDownRight + 1] = Math.min(255, Math.max(0, tempData[idxDownRight + 1] + errG * fraction));
+                    tempData[idxDownRight + 2] = Math.min(255, Math.max(0, tempData[idxDownRight + 2] + errB * fraction));
+                }
+            }
+            if (y + 2 < height) {
+                const idxDown2 = idx + width * 8;
+                tempData[idxDown2] = Math.min(255, Math.max(0, tempData[idxDown2] + errR * fraction));
+                tempData[idxDown2 + 1] = Math.min(255, Math.max(0, tempData[idxDown2 + 1] + errG * fraction));
+                tempData[idxDown2 + 2] = Math.min(255, Math.max(0, tempData[idxDown2 + 2] + errB * fraction));
+            }
+        }
+    }
+
+    return imageData;
+}
+
+function stuckiDither(imageData, strength) {
+    const width = imageData.width;
+    const height = imageData.height;
+    const data = imageData.data;
+    const tempData = new Uint8ClampedArray(data);
+
+    for (let y = 0; y < height; y++) {
+        for (let x = 0; x < width; x++) {
+            const idx = (y * width + x) * 4;
+            const r = tempData[idx];
+            const g = tempData[idx + 1];
+            const b = tempData[idx + 2];
+
+            const closest = findClosestColor(r, g, b);
+
+            const errR = (r - closest.r) * strength;
+            const errG = (g - closest.g) * strength;
+            const errB = (b - closest.b) * strength;
+
+            const divisor = 42;
+
+            if (x + 1 < width) {
+                const idxRight = idx + 4;
+                tempData[idxRight] = Math.min(255, Math.max(0, tempData[idxRight] + errR * 8 / divisor));
+                tempData[idxRight + 1] = Math.min(255, Math.max(0, tempData[idxRight + 1] + errG * 8 / divisor));
+                tempData[idxRight + 2] = Math.min(255, Math.max(0, tempData[idxRight + 2] + errB * 8 / divisor));
+            }
+            if (x + 2 < width) {
+                const idxRight2 = idx + 8;
+                tempData[idxRight2] = Math.min(255, Math.max(0, tempData[idxRight2] + errR * 4 / divisor));
+                tempData[idxRight2 + 1] = Math.min(255, Math.max(0, tempData[idxRight2 + 1] + errG * 4 / divisor));
+                tempData[idxRight2 + 2] = Math.min(255, Math.max(0, tempData[idxRight2 + 2] + errB * 4 / divisor));
+            }
+            if (y + 1 < height) {
+                if (x > 1) {
+                    const idxDownLeft2 = idx + width * 4 - 8;
+                    tempData[idxDownLeft2] = Math.min(255, Math.max(0, tempData[idxDownLeft2] + errR * 2 / divisor));
+                    tempData[idxDownLeft2 + 1] = Math.min(255, Math.max(0, tempData[idxDownLeft2 + 1] + errG * 2 / divisor));
+                    tempData[idxDownLeft2 + 2] = Math.min(255, Math.max(0, tempData[idxDownLeft2 + 2] + errB * 2 / divisor));
+                }
+                if (x > 0) {
+                    const idxDownLeft = idx + width * 4 - 4;
+                    tempData[idxDownLeft] = Math.min(255, Math.max(0, tempData[idxDownLeft] + errR * 4 / divisor));
+                    tempData[idxDownLeft + 1] = Math.min(255, Math.max(0, tempData[idxDownLeft + 1] + errG * 4 / divisor));
+                    tempData[idxDownLeft + 2] = Math.min(255, Math.max(0, tempData[idxDownLeft + 2] + errB * 4 / divisor));
+                }
+                const idxDown = idx + width * 4;
+                tempData[idxDown] = Math.min(255, Math.max(0, tempData[idxDown] + errR * 8 / divisor));
+                tempData[idxDown + 1] = Math.min(255, Math.max(0, tempData[idxDown + 1] + errG * 8 / divisor));
+                tempData[idxDown + 2] = Math.min(255, Math.max(0, tempData[idxDown + 2] + errB * 8 / divisor));
+                if (x + 1 < width) {
+                    const idxDownRight1 = idx + width * 4 + 4;
+                    tempData[idxDownRight1] = Math.min(255, Math.max(0, tempData[idxDownRight1] + errR * 4 / divisor));
+                    tempData[idxDownRight1 + 1] = Math.min(255, Math.max(0, tempData[idxDownRight1 + 1] + errG * 4 / divisor));
+                    tempData[idxDownRight1 + 2] = Math.min(255, Math.max(0, tempData[idxDownRight1 + 2] + errB * 4 / divisor));
+                }
+                if (x + 2 < width) {
+                    const idxDownRight2 = idx + width * 4 + 8;
+                    tempData[idxDownRight2] = Math.min(255, Math.max(0, tempData[idxDownRight2] + errR * 2 / divisor));
+                    tempData[idxDownRight2 + 1] = Math.min(255, Math.max(0, tempData[idxDownRight2 + 1] + errG * 2 / divisor));
+                    tempData[idxDownRight2 + 2] = Math.min(255, Math.max(0, tempData[idxDownRight2 + 2] + errB * 2 / divisor));
+                }
+            }
+            if (y + 2 < height) {
+                if (x > 1) {
+                    const idxDown2Left2 = idx + width * 8 - 8;
+                    tempData[idxDown2Left2] = Math.min(255, Math.max(0, tempData[idxDown2Left2] + errR * 1 / divisor));
+                    tempData[idxDown2Left2 + 1] = Math.min(255, Math.max(0, tempData[idxDown2Left2 + 1] + errG * 1 / divisor));
+                    tempData[idxDown2Left2 + 2] = Math.min(255, Math.max(0, tempData[idxDown2Left2 + 2] + errB * 1 / divisor));
+                }
+                if (x > 0) {
+                    const idxDown2Left = idx + width * 8 - 4;
+                    tempData[idxDown2Left] = Math.min(255, Math.max(0, tempData[idxDown2Left] + errR * 2 / divisor));
+                    tempData[idxDown2Left + 1] = Math.min(255, Math.max(0, tempData[idxDown2Left + 1] + errG * 2 / divisor));
+                    tempData[idxDown2Left + 2] = Math.min(255, Math.max(0, tempData[idxDown2Left + 2] + errB * 2 / divisor));
+                }
+                const idxDown2 = idx + width * 8;
+                tempData[idxDown2] = Math.min(255, Math.max(0, tempData[idxDown2] + errR * 4 / divisor));
+                tempData[idxDown2 + 1] = Math.min(255, Math.max(0, tempData[idxDown2 + 1] + errG * 4 / divisor));
+                tempData[idxDown2 + 2] = Math.min(255, Math.max(0, tempData[idxDown2 + 2] + errB * 4 / divisor));
+                if (x + 1 < width) {
+                    const idxDown2Right = idx + width * 8 + 4;
+                    tempData[idxDown2Right] = Math.min(255, Math.max(0, tempData[idxDown2Right] + errR * 2 / divisor));
+                    tempData[idxDown2Right + 1] = Math.min(255, Math.max(0, tempData[idxDown2Right + 1] + errG * 2 / divisor));
+                    tempData[idxDown2Right + 2] = Math.min(255, Math.max(0, tempData[idxDown2Right + 2] + errB * 2 / divisor));
+                }
+                if (x + 2 < width) {
+                    const idxDown2Right2 = idx + width * 8 + 8;
+                    tempData[idxDown2Right2] = Math.min(255, Math.max(0, tempData[idxDown2Right2] + errR * 1 / divisor));
+                    tempData[idxDown2Right2 + 1] = Math.min(255, Math.max(0, tempData[idxDown2Right2 + 1] + errG * 1 / divisor));
+                    tempData[idxDown2Right2 + 2] = Math.min(255, Math.max(0, tempData[idxDown2Right2 + 2] + errB * 1 / divisor));
+                }
+            }
+        }
+    }
+
+    for (let y = 0; y < height; y++) {
+        for (let x = 0; x < width; x++) {
+            const idx = (y * width + x) * 4;
+            const r = tempData[idx];
+            const g = tempData[idx + 1];
+            const b = tempData[idx + 2];
+
+            const closest = findClosestColor(r, g, b);
+            data[idx] = closest.r;
+            data[idx + 1] = closest.g;
+            data[idx + 2] = closest.b;
+        }
+    }
+
+    return imageData;
+}
+
+function jarvisDither(imageData, strength) {
+    const width = imageData.width;
+    const height = imageData.height;
+    const data = imageData.data;
+    const tempData = new Uint8ClampedArray(data);
+
+    for (let y = 0; y < height; y++) {
+        for (let x = 0; x < width; x++) {
+            const idx = (y * width + x) * 4;
+            const r = tempData[idx];
+            const g = tempData[idx + 1];
+            const b = tempData[idx + 2];
+
+            const closest = findClosestColor(r, g, b);
+
+            data[idx] = closest.r;
+            data[idx + 1] = closest.g;
+            data[idx + 2] = closest.b;
+
+            const errR = (r - closest.r) * strength;
+            const errG = (g - closest.g) * strength;
+            const errB = (b - closest.b) * strength;
+
+            const divisor = 48;
+
+            if (x + 1 < width) {
+                const idxRight = idx + 4;
+                tempData[idxRight] = Math.min(255, Math.max(0, tempData[idxRight] + errR * 7 / divisor));
+                tempData[idxRight + 1] = Math.min(255, Math.max(0, tempData[idxRight + 1] + errG * 7 / divisor));
+                tempData[idxRight + 2] = Math.min(255, Math.max(0, tempData[idxRight + 2] + errB * 7 / divisor));
+            }
+            if (x + 2 < width) {
+                const idxRight2 = idx + 8;
+                tempData[idxRight2] = Math.min(255, Math.max(0, tempData[idxRight2] + errR * 5 / divisor));
+                tempData[idxRight2 + 1] = Math.min(255, Math.max(0, tempData[idxRight2 + 1] + errG * 5 / divisor));
+                tempData[idxRight2 + 2] = Math.min(255, Math.max(0, tempData[idxRight2 + 2] + errB * 5 / divisor));
+            }
+            if (y + 1 < height) {
+                if (x > 1) {
+                    const idxDownLeft2 = idx + width * 4 - 8;
+                    tempData[idxDownLeft2] = Math.min(255, Math.max(0, tempData[idxDownLeft2] + errR * 3 / divisor));
+                    tempData[idxDownLeft2 + 1] = Math.min(255, Math.max(0, tempData[idxDownLeft2 + 1] + errG * 3 / divisor));
+                    tempData[idxDownLeft2 + 2] = Math.min(255, Math.max(0, tempData[idxDownLeft2 + 2] + errB * 3 / divisor));
+                }
+                if (x > 0) {
+                    const idxDownLeft = idx + width * 4 - 4;
+                    tempData[idxDownLeft] = Math.min(255, Math.max(0, tempData[idxDownLeft] + errR * 5 / divisor));
+                    tempData[idxDownLeft + 1] = Math.min(255, Math.max(0, tempData[idxDownLeft + 1] + errG * 5 / divisor));
+                    tempData[idxDownLeft + 2] = Math.min(255, Math.max(0, tempData[idxDownLeft + 2] + errB * 5 / divisor));
+                }
+                const idxDown = idx + width * 4;
+                tempData[idxDown] = Math.min(255, Math.max(0, tempData[idxDown] + errR * 7 / divisor));
+                tempData[idxDown + 1] = Math.min(255, Math.max(0, tempData[idxDown + 1] + errG * 7 / divisor));
+                tempData[idxDown + 2] = Math.min(255, Math.max(0, tempData[idxDown + 2] + errB * 7 / divisor));
+                if (x + 1 < width) {
+                    const idxDownRight = idx + width * 4 + 4;
+                    tempData[idxDownRight] = Math.min(255, Math.max(0, tempData[idxDownRight] + errR * 5 / divisor));
+                    tempData[idxDownRight + 1] = Math.min(255, Math.max(0, tempData[idxDownRight + 1] + errG * 5 / divisor));
+                    tempData[idxDownRight + 2] = Math.min(255, Math.max(0, tempData[idxDownRight + 2] + errB * 5 / divisor));
+                }
+                if (x + 2 < width) {
+                    const idxDownRight2 = idx + width * 4 + 8;
+                    tempData[idxDownRight2] = Math.min(255, Math.max(0, tempData[idxDownRight2] + errR * 3 / divisor));
+                    tempData[idxDownRight2 + 1] = Math.min(255, Math.max(0, tempData[idxDownRight2 + 1] + errG * 3 / divisor));
+                    tempData[idxDownRight2 + 2] = Math.min(255, Math.max(0, tempData[idxDownRight2 + 2] + errB * 3 / divisor));
+                }
+            }
+            if (y + 2 < height) {
+                if (x > 1) {
+                    const idxDown2Left2 = idx + width * 8 - 8;
+                    tempData[idxDown2Left2] = Math.min(255, Math.max(0, tempData[idxDown2Left2] + errR * 1 / divisor));
+                    tempData[idxDown2Left2 + 1] = Math.min(255, Math.max(0, tempData[idxDown2Left2 + 1] + errG * 1 / divisor));
+                    tempData[idxDown2Left2 + 2] = Math.min(255, Math.max(0, tempData[idxDown2Left2 + 2] + errB * 1 / divisor));
+                }
+                if (x > 0) {
+                    const idxDown2Left = idx + width * 8 - 4;
+                    tempData[idxDown2Left] = Math.min(255, Math.max(0, tempData[idxDown2Left] + errR * 3 / divisor));
+                    tempData[idxDown2Left + 1] = Math.min(255, Math.max(0, tempData[idxDown2Left + 1] + errG * 3 / divisor));
+                    tempData[idxDown2Left + 2] = Math.min(255, Math.max(0, tempData[idxDown2Left + 2] + errB * 3 / divisor));
+                }
+                const idxDown2 = idx + width * 8;
+                tempData[idxDown2] = Math.min(255, Math.max(0, tempData[idxDown2] + errR * 5 / divisor));
+                tempData[idxDown2 + 1] = Math.min(255, Math.max(0, tempData[idxDown2 + 1] + errG * 5 / divisor));
+                tempData[idxDown2 + 2] = Math.min(255, Math.max(0, tempData[idxDown2 + 2] + errB * 5 / divisor));
+                if (x + 1 < width) {
+                    const idxDown2Right = idx + width * 8 + 4;
+                    tempData[idxDown2Right] = Math.min(255, Math.max(0, tempData[idxDown2Right] + errR * 3 / divisor));
+                    tempData[idxDown2Right + 1] = Math.min(255, Math.max(0, tempData[idxDown2Right + 1] + errG * 3 / divisor));
+                    tempData[idxDown2Right + 2] = Math.min(255, Math.max(0, tempData[idxDown2Right + 2] + errB * 3 / divisor));
+                }
+                if (x + 2 < width) {
+                    const idxDown2Right2 = idx + width * 8 + 8;
+                    tempData[idxDown2Right2] = Math.min(255, Math.max(0, tempData[idxDown2Right2] + errR * 1 / divisor));
+                    tempData[idxDown2Right2 + 1] = Math.min(255, Math.max(0, tempData[idxDown2Right2 + 1] + errG * 1 / divisor));
+                    tempData[idxDown2Right2 + 2] = Math.min(255, Math.max(0, tempData[idxDown2Right2 + 2] + errB * 1 / divisor));
+                }
+            }
+        }
+    }
+
+    return imageData;
+}
+
+// Gamma 感知 Floyd-Steinberg 误差扩散（在线性空间扩散误差，参考 Caster error_diffusion_kernel.v）
+// 量化仍用感知化的 findClosestColor，但误差按线性空间计算与累积
+function gammaFloydSteinbergDither(imageData, strength) {
+    const width = imageData.width;
+    const height = imageData.height;
+    const data = imageData.data;
+    // 工作缓冲：线性空间，每像素 3 通道浮点
+    const linData = new Float32Array(width * height * 3);
+    for (let i = 0; i < data.length; i += 4) {
+        const p = (i / 4) * 3;
+        linData[p] = srgbToLinear(data[i]);
+        linData[p + 1] = srgbToLinear(data[i + 1]);
+        linData[p + 2] = srgbToLinear(data[i + 2]);
+    }
+
+    for (let y = 0; y < height; y++) {
+        for (let x = 0; x < width; x++) {
+            const p = (y * width + x) * 3;
+            const r = linData[p];
+            const g = linData[p + 1];
+            const b = linData[p + 2];
+
+            // 转回 sRGB 交给感知量化器选最近色
+            const closest = findClosestColor(linearToSrgb(r), linearToSrgb(g), linearToSrgb(b));
+
+            const idx = (y * width + x) * 4;
+            data[idx] = closest.r;
+            data[idx + 1] = closest.g;
+            data[idx + 2] = closest.b;
+
+            // 在线性空间计算误差（关键：误差值按物理亮度计）
+            const errR = (r - srgbToLinear(closest.r)) * strength;
+            const errG = (g - srgbToLinear(closest.g)) * strength;
+            const errB = (b - srgbToLinear(closest.b)) * strength;
+
+            if (x + 1 < width) {
+                const np = p + 3;
+                linData[np] += errR * 7 / 16;
+                linData[np + 1] += errG * 7 / 16;
+                linData[np + 2] += errB * 7 / 16;
+            }
+            if (y + 1 < height) {
+                if (x > 0) {
+                    const np = p + width * 3 - 3;
+                    linData[np] += errR * 3 / 16;
+                    linData[np + 1] += errG * 3 / 16;
+                    linData[np + 2] += errB * 3 / 16;
+                }
+                const np = p + width * 3;
+                linData[np] += errR * 5 / 16;
+                linData[np + 1] += errG * 5 / 16;
+                linData[np + 2] += errB * 5 / 16;
+                if (x + 1 < width) {
+                    const np = p + width * 3 + 3;
+                    linData[np] += errR * 1 / 16;
+                    linData[np + 1] += errG * 1 / 16;
+                    linData[np + 2] += errB * 1 / 16;
+                }
+            }
+        }
+    }
+
+    return imageData;
+}
+
+// 4×4 Bayer 有序抖动（参考 Caster bayer_dithering.v MONO：标准矩阵中心化到 -8..7）
+var BAYER_MATRIX = [
+    [0, 8, 2, 10],
+    [12, 4, 14, 6],
+    [3, 11, 1, 9],
+    [15, 7, 13, 5]
+];
+
+function bayerDither(imageData, strength) {
+    const width = imageData.width;
+    const height = imageData.height;
+    const data = imageData.data;
+
+    for (let y = 0; y < height; y++) {
+        const row = BAYER_MATRIX[y & 3];
+        for (let x = 0; x < width; x++) {
+            const bias = (row[x & 3] - 8) * strength;
+            const idx = (y * width + x) * 4;
+            const r = Math.min(255, Math.max(0, data[idx] + bias));
+            const g = Math.min(255, Math.max(0, data[idx + 1] + bias));
+            const b = Math.min(255, Math.max(0, data[idx + 2] + bias));
+            const closest = findClosestColor(r, g, b);
+            data[idx] = closest.r;
+            data[idx + 1] = closest.g;
+            data[idx + 2] = closest.b;
+        }
+    }
+
+    return imageData;
+}
+
+function computeEdgeMap(data, width, height) {
+    const edges = new Float32Array(width * height);
+    for (let y = 1; y < height - 1; y++) {
+        for (let x = 1; x < width - 1; x++) {
+            const idx = (y * width + x) * 4;
+            const tl = data[((y-1)*width+x-1)*4]*0.299 + data[((y-1)*width+x-1)*4+1]*0.587 + data[((y-1)*width+x-1)*4+2]*0.114;
+            const tc = data[((y-1)*width+x)*4]*0.299 + data[((y-1)*width+x)*4+1]*0.587 + data[((y-1)*width+x)*4+2]*0.114;
+            const tr = data[((y-1)*width+x+1)*4]*0.299 + data[((y-1)*width+x+1)*4+1]*0.587 + data[((y-1)*width+x+1)*4+2]*0.114;
+            const ml = data[(y*width+x-1)*4]*0.299 + data[(y*width+x-1)*4+1]*0.587 + data[(y*width+x-1)*4+2]*0.114;
+            const mr = data[(y*width+x+1)*4]*0.299 + data[(y*width+x+1)*4+1]*0.587 + data[(y*width+x+1)*4+2]*0.114;
+            const bl = data[((y+1)*width+x-1)*4]*0.299 + data[((y+1)*width+x-1)*4+1]*0.587 + data[((y+1)*width+x-1)*4+2]*0.114;
+            const bc = data[((y+1)*width+x)*4]*0.299 + data[((y+1)*width+x)*4+1]*0.587 + data[((y+1)*width+x)*4+2]*0.114;
+            const br = data[((y+1)*width+x+1)*4]*0.299 + data[((y+1)*width+x+1)*4+1]*0.587 + data[((y+1)*width+x+1)*4+2]*0.114;
+            const gx = -tl - 2*ml - bl + tr + 2*mr + br;
+            const gy = -tl - 2*tc - tr + bl + 2*bc + br;
+            edges[y * width + x] = Math.sqrt(gx * gx + gy * gy);
+        }
+    }
+    return edges;
+}
+
+function analyzeImageAdvanced(imageData) {
+    const data = imageData.data;
+    const width = imageData.width;
+    const height = imageData.height;
+    const pixelCount = width * height;
+    let brightnessSum = 0;
+    let rSum = 0, gSum = 0, bSum = 0;
+    let saturationSum = 0;
+
+    for (let i = 0; i < data.length; i += 4) {
+        const r = data[i], g = data[i + 1], b = data[i + 2];
+        rSum += r;
+        gSum += g;
+        bSum += b;
+        brightnessSum += r * 0.299 + g * 0.587 + b * 0.114;
+        const max = Math.max(r, g, b);
+        const min = Math.min(r, g, b);
+        saturationSum += max > 0 ? (max - min) / max : 0;
+    }
+
+    const edges = computeEdgeMap(data, width, height);
+    let edgeSum = 0;
+    let edgeCount = 0;
+    for (let i = 0; i < edges.length; i++) {
+        edgeSum += edges[i];
+        if (edges[i] > 20) edgeCount++;
+    }
+
+    const innerPixels = (width - 2) * (height - 2);
+    return {
+        brightness: brightnessSum / pixelCount / 255,
+        edgeDensity: innerPixels > 0 ? edgeCount / innerPixels : 0,
+        avgGradient: innerPixels > 0 ? edgeSum / innerPixels / 255 : 0,
+        saturation: saturationSum / pixelCount
+    };
+}
+
+function downsampleImageData(imageData, tw, th) {
+    const src = document.createElement('canvas');
+    src.width = imageData.width;
+    src.height = imageData.height;
+    src.getContext('2d').putImageData(imageData, 0, 0);
+    const dst = document.createElement('canvas');
+    dst.width = tw;
+    dst.height = th;
+    const ctx = dst.getContext('2d');
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'medium';
+    ctx.drawImage(src, 0, 0, tw, th);
+    return ctx.getImageData(0, 0, tw, th);
+}
+
+function generateAdaptiveCandidates(analysis) {
+    const candidates = [];
+    const algos = ['floydSteinberg', 'atkinson', 'stucki', 'jarvis'];
+    let strengths;
+
+    if (analysis.edgeDensity > 0.2) {
+        strengths = [0.6, 0.8, 1.0, 1.2, 1.4, 1.6];
+    } else if (analysis.saturation > 0.3) {
+        strengths = [0.7, 0.9, 1.0, 1.2, 1.4, 1.6, 1.8];
+    } else {
+        strengths = [0.6, 0.8, 1.0, 1.2, 1.5, 1.8, 2.0];
+    }
+
+    for (const algo of algos) {
+        for (const s of strengths) {
+            candidates.push({ type: algo, strength: s });
+        }
+    }
+    return candidates;
+}
+
+function evaluateDitherResult(original, dithered) {
+    const d1 = original.data;
+    const d2 = dithered.data;
+    const width = original.width;
+    const height = original.height;
+    const n = d1.length / 4;
+
+    let totalLabError = 0;
+    let maxError = 0;
+    for (let i = 0; i < d1.length; i += 4) {
+        const lab1 = rgbToLab(d1[i], d1[i + 1], d1[i + 2]);
+        const lab2 = rgbToLab(d2[i], d2[i + 1], d2[i + 2]);
+        const dist = labDistance(lab1, lab2);
+        totalLabError += dist;
+        if (dist > maxError) maxError = dist;
+    }
+    const avgLabError = totalLabError / n;
+
+    const origEdges = computeEdgeMap(d1, width, height);
+    const dithEdges = computeEdgeMap(d2, width, height);
+    let edgeCorrelation = 0;
+    let origEdgeEnergy = 0;
+    let dithEdgeEnergy = 0;
+    for (let i = 0; i < origEdges.length; i++) {
+        edgeCorrelation += origEdges[i] * dithEdges[i];
+        origEdgeEnergy += origEdges[i] * origEdges[i];
+        dithEdgeEnergy += dithEdges[i] * dithEdges[i];
+    }
+    const edgePreservation = origEdgeEnergy > 0 && dithEdgeEnergy > 0 ?
+        edgeCorrelation / Math.sqrt(origEdgeEnergy * dithEdgeEnergy) : 0;
+
+    const colorMap = new Map();
+    for (let i = 0; i < d2.length; i += 4) {
+        const key = (d2[i] << 16) | (d2[i+1] << 8) | d2[i+2];
+        colorMap.set(key, (colorMap.get(key) || 0) + 1);
+    }
+    const colorCounts = Array.from(colorMap.values()).sort((a, b) => b - a);
+    let colorEntropy = 0;
+    for (const count of colorCounts) {
+        const p = count / n;
+        if (p > 0) colorEntropy -= p * Math.log2(p);
+    }
+    const maxEntropy = Math.log2(Math.min(6, colorCounts.length));
+    const colorBalance = maxEntropy > 0 ? colorEntropy / maxEntropy : 0;
+
+    const score = avgLabError * 0.4 + (1 - edgePreservation) * 80 * 0.35 + (1 - colorBalance) * 30 * 0.25;
+
+    return { score, avgLabError, edgePreservation, colorBalance, maxError };
+}
+
+function applyDitherByType(imageData, type, strength) {
+    switch (type) {
+        case 'floydSteinberg': return floydSteinbergDither(imageData, strength);
+        case 'atkinson': return atkinsonDither(imageData, strength);
+        case 'stucki': return stuckiDither(imageData, strength);
+        case 'jarvis': return jarvisDither(imageData, strength);
+        case 'gammaFloydSteinberg': return gammaFloydSteinbergDither(imageData, strength);
+        case 'bayer': return bayerDither(imageData, strength);
+        default: return imageData;
+    }
+}
+
+function adaptiveDither(imageData) {
+    const width = imageData.width;
+    const height = imageData.height;
+    const evalScale = 3;
+    const evalW = Math.max(30, Math.floor(width / evalScale));
+    const evalH = Math.max(30, Math.floor(height / evalScale));
+    const evalData = downsampleImageData(imageData, evalW, evalH);
+
+    const analysis = analyzeImageAdvanced(evalData);
+    const candidates = generateAdaptiveCandidates(analysis);
+
+    let bestScore = Infinity;
+    let bestConfig = candidates[0];
+
+    for (const config of candidates) {
+        const copy = new ImageData(
+            new Uint8ClampedArray(evalData.data),
+            evalW,
+            evalH
+        );
+        applyDitherByType(copy, config.type, config.strength);
+        const result = evaluateDitherResult(evalData, copy);
+        if (result.score < bestScore) {
+            bestScore = result.score;
+            bestConfig = config;
+        }
+    }
+
+    window._adaptiveConfig = bestConfig;
+    return applyDitherByType(imageData, bestConfig.type, bestConfig.strength);
+}
+
+// ===== Atkinson 增强六色抖动（Atkinson Enhanced）=====
+// 面向墨水屏六色显示优化的增强型误差扩散，相对普通 Atkinson 的改进：
+// 1) 常规像素按 CIELAB 感知色差加权最近色选色，比 RGB 最近色更符合人眼；
+// 2) 蓝/青区域使用修正 LUT + 选色 LUT 两级查表，补偿墨水屏蓝色显色偏差；
+// 3) 误差残差按墨水屏实际校准显色值计算（而非纯显示色），扩散更贴近最终观感；
+// 4) 三行滚动缓冲累加原始残差，像素消费时一次性 (sum+4)>>3，减少整数舍入误差。
+
+// 六色显示调色板（索引顺序: 0黑 1白 2黄 3红 4绿 5蓝）
+var AE_DISPLAY_PALETTE = [
+    [0, 0, 0],
+    [255, 255, 255],
+    [255, 255, 0],
+    [255, 0, 0],
+    [0, 255, 0],
+    [0, 0, 255]
+];
+
+// 六色残差校准色（按墨水屏实际显色值标定，误差扩散用，与最终显示色不同）
+var AE_RESIDUAL_PALETTE = [
+    [0, 0, 0],
+    [255, 255, 255],
+    [255, 235, 0],
+    [154, 0, 0],
+    [20, 85, 16],
+    [0, 36, 154]
+];
+
+// SZ 增强校色（YRD0370 fit128 感知六色，Epson V19 II 0° Gamma 2.2 实测，
+// 与 sz_enhanced.js PALETTE_PERCEIVED 一致；索引 0黑 1白 2黄 3红 4绿 5蓝）
+var SZ_FIT128_PALETTE = [
+    [2, 2, 2],          // 黑 (2,2,2)
+    [190, 200, 200],    // 白 (190,200,200)
+    [197, 194, 7],      // 黄 (197.478, 194.495, 6.653)
+    [89, 10, 6],        // 红 (88.942, 10.070, 5.819)
+    [36, 75, 24],       // 绿 (35.987, 74.689, 23.922)
+    [0, 18, 148]        // 蓝 (0, 18.061, 148.165)
+];
+
+// 调色板索引 -> film 编码（film 颜色表: 黑0x00 白0x01 黄0x02 红0x03 蓝0x04 绿0x05）
+var AE_INDEX_TO_FILM_CODE = [0x00, 0x01, 0x02, 0x03, 0x05, 0x04];
+
+// film 编码 -> 预览 RGB（与固件 color_get 显示一致）
+var FILM_CODE_RGB = {
+    0x00: [0, 0, 0],
+    0x01: [255, 255, 255],
+    0x02: [255, 255, 0],
+    0x03: [255, 0, 0],
+    0x04: [0, 0, 255],
+    0x05: [41, 204, 20]
+};
+
+// sRGB 通道线性化（D65 标准）
+function aeChannelToLinear(c) {
+    c = c / 255;
+    return c > 0.04045 ? Math.pow((c + 0.055) / 1.055, 2.4) : c / 12.92;
+}
+
+function aeLabPivot(t) {
+    return t > 0.008856 ? Math.pow(t, 1.0 / 3.0) : 7.787 * t + 16.0 / 116.0;
+}
+
+// sRGB -> D65 CIELAB
+function aeRgbToLab(r, g, b) {
+    var rl = aeChannelToLinear(r) * 100.0;
+    var gl = aeChannelToLinear(g) * 100.0;
+    var bl = aeChannelToLinear(b) * 100.0;
+    var x = (rl * 0.4124564 + gl * 0.3575761 + bl * 0.1804375) / 95.047;
+    var y = (rl * 0.2126729 + gl * 0.7151522 + bl * 0.0721750) / 100.0;
+    var z = (rl * 0.0193339 + gl * 0.1191920 + bl * 0.9503041) / 108.883;
+    var fx = aeLabPivot(x);
+    var fy = aeLabPivot(y);
+    var fz = aeLabPivot(z);
+    return { l: 116.0 * fy - 16.0, a: 500.0 * (fx - fy), b: 200.0 * (fy - fz) };
+}
+
+// 六色显示色的预计算 CIELAB
+var AE_PALETTE_LABS = AE_DISPLAY_PALETTE.map(function(color) {
+    return aeRgbToLab(color[0], color[1], color[2]);
+});
+
+// SZ 校色的预计算 CIELAB（选色用，替换 AE 校色时用）
+var SZ_FIT128_PALETTE_LABS = SZ_FIT128_PALETTE.map(function(color) {
+    return aeRgbToLab(color[0], color[1], color[2]);
+});
+
+// 64^3 查表单元索引
+function aeLutCell(r, g, b) {
+    return ((r >> 2) << 12) | ((g >> 2) << 6) | (b >> 2);
+}
+
+function aeLutAvailable() {
+    return typeof _aeCorrectionLUT !== 'undefined' && _aeCorrectionLUT !== null &&
+        typeof _aeSelectionLUT !== 'undefined' && _aeSelectionLUT !== null;
+}
+
+// 六色选色: 蓝/青区域走两级 LUT（墨水屏蓝色补偿，仅 AE 校色），其余走 CIELAB 加权最近色
+function aeSelectInkColor(r, g, b, lab, paletteLabs, useLut) {
+    var bestIndex;
+    if (useLut !== false && aeLutAvailable() && (lab.b < -10.0 || lab.a < -35.0)) {
+        // 修正 LUT 混合后查选色 LUT
+        var cell = aeLutCell(r, g, b) * 3;
+        var cr = _aeCorrectionLUT[cell];
+        var cg = _aeCorrectionLUT[cell + 1];
+        var cb = _aeCorrectionLUT[cell + 2];
+        var r2 = r - ((r - cr) >> 2);
+        var g2 = g - ((g - cg) >> 2);
+        var b2 = b - ((b - cb) >> 2);
+        bestIndex = _aeSelectionLUT[aeLutCell(r2, g2, b2)];
+        if (bestIndex >= 6) bestIndex = 0;
+    } else {
+        bestIndex = 0;
+        var bestDistance = 0x7FFFFFFF;
+        for (var i = 0; i < paletteLabs.length; i++) {
+            var pl = paletteLabs[i];
+            var dl = lab.l - pl.l;
+            var da = lab.a - pl.a;
+            var db = lab.b - pl.b;
+            // 加权距离先截断成整数再做严格整数比较，平局保留较早索引
+            var distance = Math.trunc(2.0 * dl * dl + 0.8 * da * da + db * db);
+            if (distance < bestDistance) {
+                bestDistance = distance;
+                bestIndex = i;
+            }
+        }
+    }
+    return bestIndex;
+}
+
+function aeClampU8(value) {
+    return value < 0 ? 0 : (value > 255 ? 255 : value);
+}
+
+// SZ 校色预处理：CIELab L 压缩到面板黑/白范围（与 balanced_fit128_seed.mjs 的
+// compressDynamicRange 一致，黑=fit128 黑 2,2,2，白=fit128 白 190,200,200）
+function szCompressDynamicRange(imageData) {
+    var width = imageData.width;
+    var height = imageData.height;
+    var src = imageData.data;
+    var n = width * height;
+    var blackL = aeRgbToLab(2, 2, 2).l;
+    var whiteL = aeRgbToLab(190, 200, 200).l;
+    var out = new ImageData(width, height);
+    var od = out.data;
+    for (var i = 0; i < n; i++) {
+        var o = i * 4;
+        var lab = aeRgbToLab(src[o], src[o + 1], src[o + 2]);
+        var compressedL = blackL + (lab.l / 100.0) * (whiteL - blackL);
+        var rgb = szLabToRgb(compressedL, lab.a, lab.b);
+        od[o] = rgb[0];
+        od[o + 1] = rgb[1];
+        od[o + 2] = rgb[2];
+        od[o + 3] = 255;
+    }
+    return out;
+}
+
+// Lab -> sRGB（upstream Lab 反变换，与 sz_enhanced.js upstreamLabToRgb 一致）
+function szLabToRgb(L, a, b) {
+    var y = (L + 16) / 116;
+    var x = a / 500 + y;
+    var z = y - b / 200;
+    x = x > 0.206897 ? Math.pow(x, 3) : (x - 16 / 116) / 7.787;
+    y = y > 0.206897 ? Math.pow(y, 3) : (y - 16 / 116) / 7.787;
+    z = z > 0.206897 ? Math.pow(z, 3) : (z - 16 / 116) / 7.787;
+    x = x * 95.047 / 100;
+    y = y * 100.0 / 100;
+    z = z * 108.883 / 100;
+    var r = x * 3.2404542 + y * -1.5371385 + z * -0.4985314;
+    var g = x * -0.969266 + y * 1.8760108 + z * 0.041556;
+    var b2 = x * 0.0556434 + y * -0.2040259 + z * 1.0572252;
+    r = r > 0.0031308 ? 1.055 * Math.pow(r, 1 / 2.4) - 0.055 : 12.92 * r;
+    g = g > 0.0031308 ? 1.055 * Math.pow(g, 1 / 2.4) - 0.055 : 12.92 * g;
+    b2 = b2 > 0.0031308 ? 1.055 * Math.pow(b2, 1 / 2.4) - 0.055 : 12.92 * b2;
+    return [
+        Math.max(0, Math.min(255, Math.round(r * 255))),
+        Math.max(0, Math.min(255, Math.round(g * 255))),
+        Math.max(0, Math.min(255, Math.round(b2 * 255)))
+    ];
+}
+
+// SZ 选色：RGB 平方距离最近邻 fit128 感知六色。
+// fit128 校准色亮暗不均：黄 (197,194,7) 很亮、绿 (36,75,24) 很暗。
+// Atkinson 扩散丢 1/4 误差会放大亮色的选择（偏黄）；而暗绿在 RGB 距离下
+// 会误吸暗红/暗蓝等中间色像素（偏绿）。分别用惩罚系数（>1 抑制）平衡：
+// 1.8 为实测标定值（用户图 1080×1528 上绿 12.0% ≈ SZ 增强基准 12.4%）
+var SZ_YELLOW_PENALTY = 1.8;
+var SZ_GREEN_PENALTY = 1.8;
+function szClosestFit128(r, g, b) {
+    var best = 0;
+    var bestDist = Infinity;
+    for (var i = 0; i < SZ_FIT128_PALETTE.length; i++) {
+        var c = SZ_FIT128_PALETTE[i];
+        var dr = r - c[0];
+        var dg = g - c[1];
+        var db = b - c[2];
+        var dist = dr * dr + dg * dg + db * db;
+        if (i === 2) {
+            dist *= SZ_YELLOW_PENALTY;
+        } else if (i === 4) {
+            dist *= SZ_GREEN_PENALTY;
+        }
+        if (dist < bestDist) {
+            bestDist = dist;
+            best = i;
+        }
+    }
+    return best;
+}
+
+// Atkinson 增强量化内核：三行滚动缓冲六邻域误差扩散（消费时一次性 (sum+4)>>3）。
+// 返回用色板实际颜色填充的预览 ImageData；后续 processImageData 会把
+// 这些颜色精确映射回色板索引，因此下载/蓝牙上传结果与预览一致。
+//   selectIndexFn(r,g,b,lab) → 色板索引
+//   residualOf(index)        → 该索引用于计算残差的 RGB（墨水屏按实际显示色算）
+//   previewColorOf(index)    → 该索引用于预览的 RGB；缺省按六色 film 编码映射
+//   strength                 → 扩散强度倍数，缺省 1（内核原始强度）
+function atkinsonQuantizeBase(imageData, selectIndexFn, residualOf, previewColorOf, strength) {
+    const width = imageData.width;
+    const height = imageData.height;
+    const data = imageData.data;
+    const stride = (width + 3) * 3;
+    const spread = (strength === undefined) ? 1 : strength;
+    let currentErrors = new Int32Array(stride);
+    let nextErrors = new Int32Array(stride);
+    let secondErrors = new Int32Array(stride);
+
+    // 当前像素的色板索引（逻辑行优先）
+    var codes = new Uint8Array(width * height);
+
+    function slot(x) {
+        return (x + 1) * 3;
+    }
+
+    for (let y = 0; y < height; y++) {
+        for (let x = 0; x < width; x++) {
+            const errorOffset = slot(x);
+            const sourceOffset = (y * width + x) * 4;
+            // 缓冲里累加的是未除以 8 的原始残差，消费时一次性 (sum+4)>>3
+            const r = aeClampU8(data[sourceOffset] + ((currentErrors[errorOffset] + 4) >> 3));
+            const g = aeClampU8(data[sourceOffset + 1] + ((currentErrors[errorOffset + 1] + 4) >> 3));
+            const b = aeClampU8(data[sourceOffset + 2] + ((currentErrors[errorOffset + 2] + 4) >> 3));
+
+            const lab = aeRgbToLab(r, g, b);
+            const index = selectIndexFn(r, g, b, lab);
+            codes[y * width + x] = index;
+
+            // 残差按墨水屏实际显示色（六色用校准残差色）计算，非预览色
+            const rp = residualOf(index);
+            const errR = (r - rp[0]) * spread;
+            const errG = (g - rp[1]) * spread;
+            const errB = (b - rp[2]) * spread;
+
+            // 六邻域: (x+1,y) (x+2,y) (x-1,y+1) (x,y+1) (x+1,y+1) (x,y+2)
+            let n = slot(x + 1);
+            currentErrors[n] += errR; currentErrors[n + 1] += errG; currentErrors[n + 2] += errB;
+            n = slot(x + 2);
+            currentErrors[n] += errR; currentErrors[n + 1] += errG; currentErrors[n + 2] += errB;
+            n = slot(x - 1);
+            nextErrors[n] += errR; nextErrors[n + 1] += errG; nextErrors[n + 2] += errB;
+            n = slot(x);
+            nextErrors[n] += errR; nextErrors[n + 1] += errG; nextErrors[n + 2] += errB;
+            n = slot(x + 1);
+            nextErrors[n] += errR; nextErrors[n + 1] += errG; nextErrors[n + 2] += errB;
+            n = slot(x);
+            secondErrors[n] += errR; secondErrors[n + 1] += errG; secondErrors[n + 2] += errB;
+        }
+        // 滚动三行缓冲
+        const temp = currentErrors;
+        currentErrors = nextErrors;
+        nextErrors = secondErrors;
+        secondErrors = temp;
+        secondErrors.fill(0);
+    }
+
+    // 预览: 用色板实际颜色填充（与打包/设备显示一致）
+    const out = new ImageData(width, height);
+    const outData = out.data;
+    for (let i = 0; i < codes.length; i++) {
+        const color = previewColorOf ? previewColorOf(codes[i]) : FILM_CODE_RGB[AE_INDEX_TO_FILM_CODE[codes[i]]];
+        outData[i * 4] = color[0];
+        outData[i * 4 + 1] = color[1];
+        outData[i * 4 + 2] = color[2];
+        outData[i * 4 + 3] = 255;
+    }
+    return out;
+}
+
+// 原版：AE 校色（含蓝/青 LUT 补偿，选色用 AE 加权 CIELAB 距离）
+function atkinsonEnhancedQuantize(imageData) {
+    return atkinsonQuantizeBase(imageData,
+        function(r, g, b, lab) {
+            return aeSelectInkColor(r, g, b, lab, AE_PALETTE_LABS, true);
+        },
+        function(i) {
+            return AE_RESIDUAL_PALETTE[i];
+        });
+}
+
+// 新算法：Atkinson 扩散 + SZ 校色（compressDynamicRange 预处理 + fit128 感知色
+// RGB 距离选色与残差，与 SZ 增强 V5 seed 的校色链路一致，无蓝青 LUT）
+function atkinsonSzCalibQuantize(imageData) {
+    return atkinsonQuantizeBase(szCompressDynamicRange(imageData),
+        function(r, g, b) {
+            return szClosestFit128(r, g, b);
+        },
+        function(i) {
+            return SZ_FIT128_PALETTE[i];
+        });
+}
+
+// ===== 8bpp 索引色量化（3.7" E6 spectra 面板，Format 0x02 ColorQual / 0x03 ColorFast）=====
+// 色板严格按 docs/film/film.md 10.6 的两张表，取 HEX 列（表中 R/G/B 列为厂商标称值，
+// HEX 列为实机实测值，两者冲突时以 HEX 为准）：
+//   ColorFast（Format 0x03）→ rgb_fast，57 项有效候选色（白 = index 21，黑 = index 0 / 20）；
+//   ColorQual（Format 0x02）→ rgb_qual，52 项有效候选色（白 = index 15，候选里没有黑色，
+//     最暗的是 index 3）。
+// 候选色集合 = 表中「有效」标 Y 的索引，未标 Y 的索引不参与选色。
+// 索引 = 高 3bit * 8 + 低 3bit。
+var CF_PALETTE_FAST = [
+    [0, 0, 0], [0, 0, 0], [0, 0, 0], [30, 25, 47],
+    [62, 37, 56], [108, 62, 72], [117, 60, 49], [172, 97, 58],
+    [41, 41, 79], [58, 62, 91], [69, 70, 100], [78, 78, 102],
+    [121, 114, 122], [150, 131, 127], [171, 145, 120], [198, 170, 130],
+    [45, 56, 112], [110, 114, 139], [163, 164, 169], [197, 197, 187],
+    [0, 0, 0], [255, 255, 255], [255, 255, 255], [255, 255, 255],
+    [34, 34, 84], [37, 37, 87], [38, 38, 92], [40, 39, 96],
+    [66, 63, 110], [107, 86, 117], [133, 108, 112], [182, 146, 132],
+    [21, 60, 135], [32, 84, 144], [38, 90, 147], [42, 95, 149],
+    [70, 124, 158], [105, 147, 163], [129, 162, 153], [173, 184, 152],
+    [63, 24, 29], [90, 24, 28], [94, 23, 27], [97, 25, 29],
+    [128, 30, 31], [149, 37, 35], [157, 45, 43], [180, 71, 32],
+    [38, 55, 83], [65, 101, 101], [81, 117, 105], [94, 127, 106],
+    [123, 149, 112], [145, 162, 110], [169, 170, 100], [194, 187, 96],
+    [62, 55, 73], [145, 132, 77], [187, 167, 70], [211, 185, 62],
+    [0, 0, 0], [0, 0, 0], [0, 0, 0], [219, 198, 57]
+];
+
+var CF_PALETTE_QUAL = [
+    [0, 0, 0], [0, 0, 0], [0, 0, 0], [31, 25, 43],
+    [46, 33, 55], [64, 46, 66], [84, 51, 55], [163, 91, 58],
+    [46, 97, 188], [131, 170, 206], [191, 211, 221], [215, 227, 227],
+    [255, 255, 255], [255, 255, 255], [255, 255, 255], [255, 255, 255],
+    [27, 52, 146], [25, 69, 170], [27, 73, 178], [30, 81, 182],
+    [66, 118, 191], [105, 146, 196], [133, 166, 190], [181, 196, 193],
+    [24, 69, 145], [34, 91, 151], [39, 97, 152], [45, 106, 155],
+    [72, 131, 163], [100, 151, 166], [128, 169, 152], [170, 191, 143],
+    [103, 25, 30], [130, 19, 27], [133, 19, 27], [136, 21, 30],
+    [157, 21, 28], [170, 24, 33], [175, 24, 30], [196, 46, 33],
+    [55, 34, 61], [67, 37, 64], [72, 39, 66], [76, 42, 69],
+    [115, 57, 79], [148, 73, 90], [166, 88, 96], [197, 136, 124],
+    [28, 67, 69], [54, 103, 63], [72, 121, 66], [87, 133, 67],
+    [108, 145, 55], [124, 154, 46], [154, 169, 34], [188, 187, 19],
+    [58, 70, 78], [151, 155, 48], [205, 185, 15], [240, 211, 7],
+    [0, 0, 0], [0, 0, 0], [0, 0, 0], [243, 214, 7]
+];
+
+// 实测 ColorQual 调色板：epd-color-lab（GPL-3.0）导出的 64 个物理索引，
+// 原始数据：https://github.com/mad462/epd-color-lab/tree/main/host/act
+// 48-color-qual.act / 48-color-qual-c025.act；接入说明见 docs/film/measured-color.md。
+// 原有 CF_PALETTE_QUAL 保持不变。
+// 无效索引仍保留在数组中，候选索引沿用 rgb_qual 表的 52 个有效项。
+var CF_PALETTE_QUAL_MEASURED = [
+    [0, 0, 0], [0, 0, 0], [0, 0, 0], [69, 73, 81],
+    [73, 76, 84], [80, 81, 85], [84, 81, 80], [105, 94, 82],
+    [72, 112, 147], [119, 147, 163], [148, 165, 171], [162, 173, 174],
+    [255, 255, 255], [255, 255, 255], [255, 255, 255], [171, 179, 171],
+    [65, 85, 114], [67, 94, 126], [67, 97, 131], [67, 97, 131],
+    [66, 118, 191], [101, 126, 147], [133, 166, 190], [181, 196, 193],
+    [59, 98, 123], [67, 109, 124], [67, 111, 130], [67, 111, 130],
+    [74, 118, 135], [86, 126, 134], [104, 137, 131], [124, 148, 128],
+    [106, 70, 74], [124, 70, 73], [128, 70, 73], [128, 70, 73],
+    [138, 76, 77], [143, 80, 78], [147, 82, 78], [156, 93, 78],
+    [80, 75, 86], [86, 78, 88], [86, 78, 88], [86, 78, 88],
+    [105, 86, 94], [120, 92, 98], [131, 101, 102], [147, 118, 112],
+    [67, 98, 87], [88, 116, 81], [98, 122, 80], [105, 127, 79],
+    [112, 131, 79], [117, 135, 78], [130, 143, 76], [145, 151, 74],
+    [88, 93, 87], [139, 138, 75], [162, 152, 71], [180, 165, 67],
+    [0, 0, 0], [0, 0, 0], [0, 0, 0], [180, 165, 67]
+];
+
+var CF_PALETTE_QUAL_CALIBRATED = [
+    [0, 0, 0], [0, 0, 0], [0, 0, 0], [52, 58, 68],
+    [58, 61, 71], [66, 68, 73], [71, 68, 66], [96, 83, 69],
+    [56, 104, 141], [111, 141, 158], [142, 160, 166], [157, 168, 169],
+    [252, 252, 252], [252, 252, 252], [252, 252, 252], [166, 174, 166],
+    [46, 73, 106], [49, 83, 119], [49, 87, 124], [49, 87, 124],
+    [48, 110, 187], [91, 119, 141], [126, 161, 186], [177, 192, 189],
+    [37, 88, 116], [49, 100, 117], [49, 102, 123], [49, 102, 123],
+    [59, 110, 128], [74, 119, 127], [95, 131, 124], [117, 142, 121],
+    [97, 54, 59], [117, 54, 58], [121, 54, 58], [121, 54, 58],
+    [132, 61, 63], [137, 66, 64], [141, 69, 64], [151, 82, 64],
+    [66, 60, 74], [74, 64, 76], [74, 64, 76], [74, 64, 76],
+    [96, 74, 83], [112, 81, 88], [124, 91, 92], [141, 110, 104],
+    [49, 88, 75], [76, 108, 68], [88, 114, 66], [96, 120, 65],
+    [104, 124, 65], [109, 128, 64], [123, 137, 61], [139, 145, 59],
+    [76, 82, 75], [133, 132, 60], [157, 146, 55], [175, 160, 49],
+    [0, 0, 0], [0, 0, 0], [0, 0, 0], [175, 160, 49]
+];
+
+var CF_QUAL_CANDIDATE_INDEXES = [3, 4, 5, 6, 7, 8, 9, 10, 11,
+    15, 16, 17, 18, 19, 21,
+    24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40,
+    41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 63];
+
+// 实测方案的像素 Lab 与候选色 Lab 都使用 double 精度 sRGB 线性化。
+// 旧配置仍沿用原有 Float32 LUT，避免改变既有量化结果。
+var CF_MEASURED_SRGB_TO_LINEAR_LUT = new Float64Array(256);
+for (var cfChannel = 0; cfChannel < 256; cfChannel++) {
+    CF_MEASURED_SRGB_TO_LINEAR_LUT[cfChannel] = aeChannelToLinear(cfChannel);
+}
+
+var CF_PROFILES = {
+    // ColorFast：2 相快刷，Format 0x03，rgb_fast 表标 Y 的 57 项
+    colorFast55: {
+        format: 0x03,
+        label: '55 色 ColorFast（Format 0x03，2 相）',
+        palette: CF_PALETTE_FAST,
+        candidateIndexes: [0, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19,
+            20, 21, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41,
+            42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 63]
+    },
+    // ColorQual：3 相高质量，Format 0x02，rgb_qual 表标 Y 的 52 项
+    // （白 = index 15，最暗候选 = index 3；index 0/1/2/60/61/62 在表里是黑但不标 Y，
+    //   20/22/23 不标 Y，均不参与选色）
+    colorQual: {
+        format: 0x02,
+        label: '46 色 ColorQual（Format 0x02，3 相）',
+        palette: CF_PALETTE_QUAL,
+        candidateIndexes: CF_QUAL_CANDIDATE_INDEXES
+    },
+    colorQualMeasured: {
+        format: 0x02,
+        label: '实测校色 · 原值 ColorQual（3 相）',
+        palette: CF_PALETTE_QUAL_MEASURED,
+        candidateIndexes: CF_QUAL_CANDIDATE_INDEXES,
+        measured: true
+    },
+    colorQualCalibrated: {
+        format: 0x02,
+        label: '实测校色 · 校正2.5% ColorQual（3 相）',
+        palette: CF_PALETTE_QUAL_CALIBRATED,
+        candidateIndexes: CF_QUAL_CANDIDATE_INDEXES,
+        measured: true
+    }
+};
+
+// 预计算各模式候选色的 D65 CIELAB（fast 55 项 / qual 46 项，外加白底 index 0）
+Object.keys(CF_PROFILES).forEach(function(key) {
+    var profile = CF_PROFILES[key];
+    profile.candidateLabs = profile.candidateIndexes.map(function(index) {
+        var c = profile.palette[index];
+        return aeRgbToLab(c[0], c[1], c[2]);
+    });
+});
+
+// 当前选中的 8bpp 色板配置（未选中 8bpp 算法时返回 null）
+function getActive8bppProfile() {
+    var select = document.getElementById('ditherType');
+    return select ? (CF_PROFILES[select.value] || null) : null;
+}
+
+// 选色：加权 D65 CIELAB 最近邻（明度权重 2 倍，与 AE 选色一致），返回候选索引。
+// 明度加重的原因：墨水屏上明度保真比色度更重要，灰阶梯度也更单调。
+// 逐像素调用，故线性化走 sRGB LUT（免 pow）、立方根用 Math.cbrt，且不分配中间对象。
+function cfClosestIndex(r, g, b, profile) {
+    var labs = profile.candidateLabs;
+    var indexes = profile.candidateIndexes;
+
+    var linear = profile.measured ? CF_MEASURED_SRGB_TO_LINEAR_LUT : SRGB_TO_LINEAR_LUT;
+    var rl = linear[r] * 100.0;
+    var gl = linear[g] * 100.0;
+    var bl = linear[b] * 100.0;
+
+    var x = (rl * 0.4124564 + gl * 0.3575761 + bl * 0.1804375) / 95.047;
+    var y = (rl * 0.2126729 + gl * 0.7151522 + bl * 0.0721750) / 100.0;
+    var z = (rl * 0.0193339 + gl * 0.1191920 + bl * 0.9503041) / 108.883;
+
+    var fx = x > 0.008856 ? Math.cbrt(x) : 7.787 * x + 16.0 / 116.0;
+    var fy = y > 0.008856 ? Math.cbrt(y) : 7.787 * y + 16.0 / 116.0;
+    var fz = z > 0.008856 ? Math.cbrt(z) : 7.787 * z + 16.0 / 116.0;
+
+    var labL = 116.0 * fy - 16.0;
+    var labA = 500.0 * (fx - fy);
+    var labB = 200.0 * (fy - fz);
+
+    var best = 0;
+    var bestDist = Infinity;
+    for (var i = 0; i < labs.length; i++) {
+        var pl = labs[i];
+        var dl = labL - pl.l;
+        var da = labA - pl.a;
+        var db = labB - pl.b;
+        // 实测方案按 (1.2 * dL)^2；旧方案维持原来的 2 * dL^2。
+        var dist = profile.measured
+            ? (1.2 * dl) * (1.2 * dl) + da * da + db * db
+            : 2.0 * dl * dl + da * da + db * db;
+        if (dist < bestDist) {
+            bestDist = dist;
+            best = i;
+        }
+    }
+    return indexes[best];
+}
+
+// 8bpp 索引色的抖动：只借「Atkinson 增强」的扩散内核（三行滚动缓冲、六邻域、
+// 消费时 (sum+4)>>3 整数累加），不用它的 LUT 校色：
+//   - 选色 = 当前色板的加权 CIELAB 最近邻（cfClosestIndex）
+//   - 残差 = 选中色板色（面板实际显示色）
+//   - 预览 = 选中色板色，故预览与下载/上传结果逐像素一致
+// strength 为「抖动强度」滑块的扩散倍数（1 = 内核原始强度）。
+function cfDither(imageData, strength, profile) {
+    return atkinsonQuantizeBase(imageData,
+        function(r, g, b) {
+            return cfClosestIndex(r, g, b, profile);
+        },
+        function(index) {
+            return profile.palette[index];
+        },
+        function(index) {
+            return profile.palette[index];
+        },
+        strength);
+}
+
+// 实测方案：蛇形 Floyd-Steinberg 扩散。工作值使用浮点数，每次扩散后将邻居
+// 限制在原图该通道 ±64，避免高强度抖动把局部颜色推得过远。量化时四舍五入
+// 到整数 RGB，误差也从同一整数 RGB 计算；strength 直接取现有滑块值。
+function cfMeasuredDiffuse(work, original, offset, errR, errG, errB, factor) {
+    for (var c = 0; c < 3; c++) {
+        var delta = c === 0 ? errR : (c === 1 ? errG : errB);
+        var low = original[offset + c] - 64;
+        var high = original[offset + c] + 64;
+        work[offset + c] = Math.max(low, Math.min(high, work[offset + c] + delta * factor));
+    }
+}
+
+function cfMeasuredDither(imageData, strength, profile) {
+    var data = imageData.data;
+    var original = new Uint8Array(data);
+    var work = new Float64Array(data.length);
+    for (var i = 0; i < data.length; i += 4) {
+        work[i] = original[i];
+        work[i + 1] = original[i + 1];
+        work[i + 2] = original[i + 2];
+    }
+    var width = imageData.width;
+    var height = imageData.height;
+    var stride = width * 4;
+    for (var y = 0; y < height; y++) {
+        var reverse = (y & 1) !== 0;
+        for (var step = 0; step < width; step++) {
+            var x = reverse ? width - 1 - step : step;
+            var offset = y * stride + x * 4;
+            var r = Math.round(Math.max(0, Math.min(255, work[offset])));
+            var g = Math.round(Math.max(0, Math.min(255, work[offset + 1])));
+            var b = Math.round(Math.max(0, Math.min(255, work[offset + 2])));
+            var index = cfClosestIndex(r, g, b, profile);
+            var color = profile.palette[index];
+            var errR = (r - color[0]) * strength;
+            var errG = (g - color[1]) * strength;
+            var errB = (b - color[2]) * strength;
+            data[offset] = color[0];
+            data[offset + 1] = color[1];
+            data[offset + 2] = color[2];
+
+            var forward = reverse ? -1 : 1;
+            if (x + forward >= 0 && x + forward < width) {
+                cfMeasuredDiffuse(work, original, offset + forward * 4,
+                    errR, errG, errB, 7 / 16);
+            }
+            if (y + 1 < height) {
+                var down = offset + stride;
+                if (x - forward >= 0 && x - forward < width) {
+                    cfMeasuredDiffuse(work, original, down - forward * 4,
+                        errR, errG, errB, 3 / 16);
+                }
+                cfMeasuredDiffuse(work, original, down, errR, errG, errB, 5 / 16);
+                if (x + forward >= 0 && x + forward < width) {
+                    cfMeasuredDiffuse(work, original, down + forward * 4,
+                        errR, errG, errB, 1 / 16);
+                }
+            }
+        }
+    }
+    return imageData;
+}
+
+// 8bpp 索引色量化：useDither 为真走误差扩散，否则逐像素最近色。
+// 输出用色板实际颜色填充，后续反查索引与预览都以此为准。
+function cfQuantize(imageData, strength, useDither, profile) {
+    if (useDither) {
+        return profile.measured
+            ? cfMeasuredDither(imageData, strength, profile)
+            : cfDither(imageData, strength, profile);
+    }
+
+    var palette = profile.palette;
+    var data = imageData.data;
+    for (var i = 0; i < data.length; i += 4) {
+        var color = palette[cfClosestIndex(data[i], data[i + 1], data[i + 2], profile)];
+        data[i] = color[0];
+        data[i + 1] = color[1];
+        data[i + 2] = color[2];
+    }
+    return imageData;
+}
+
+// 8bpp 主体大小：每像素 1 字节（见 film.md 10.5）
+function get8bppPixelDataSize() {
+    return getCanvasWidth() * getCanvasHeight();
+}
+
+// 逐像素写入色板索引，按设备像素排布落位（与 v1 4bpp 同一套 getPixelIndex）
+function processImageData8bpp(imageData, profile) {
+    var width = imageData.width;
+    var height = imageData.height;
+    var data = imageData.data;
+    var out = new Uint8Array(get8bppPixelDataSize());
+
+    for (var y = 0; y < height; y++) {
+        for (var x = 0; x < width; x++) {
+            var o = (y * width + x) * 4;
+            out[getPixelIndex(x, y, width, height)] =
+                cfClosestIndex(data[o], data[o + 1], data[o + 2], profile);
+        }
+    }
+
+    return out;
+}
+
+function decodeProcessedData8bpp(processedData, width, height, profile) {
+    var imageData = new ImageData(width, height);
+    var data = imageData.data;
+    var palette = profile.palette;
+
+    for (var y = 0; y < height; y++) {
+        for (var x = 0; x < width; x++) {
+            var color = palette[processedData[getPixelIndex(x, y, width, height)]] || palette[0];
+            var o = (y * width + x) * 4;
+            data[o] = color[0];
+            data[o + 1] = color[1];
+            data[o + 2] = color[2];
+            data[o + 3] = 255;
+        }
+    }
+
+    return imageData;
+}
+
+// 8bpp 文件头：ColorCount/ColorTable 不使用，Format 按色板区分
+// 0x02 = ColorQual（3 相）/ 0x03 = ColorFast（2 相）（见 film.md 10.2）
+function generateFilmHeader8bpp(profile) {
+    var screenWidth = getCanvasWidth();
+    var screenHeight = getCanvasHeight();
+    var bodySize = screenWidth * screenHeight;
+    var header = new Array(FILM_HEADER_SIZE).fill(0);
+
+    header[0] = bodySize & 0xFF;
+    header[1] = (bodySize >> 8) & 0xFF;
+    header[2] = (bodySize >> 16) & 0xFF;
+    header[3] = (bodySize >> 24) & 0xFF;
+
+    header[4] = screenWidth & 0xFF;
+    header[5] = (screenWidth >> 8) & 0xFF;
+    header[6] = screenHeight & 0xFF;
+    header[7] = (screenHeight >> 8) & 0xFF;
+
+    header[9] = profile.format;
+
+    return new Uint8Array(header);
+}
+
+// 按当前算法打包完整 .film：ColorFast / ColorQual 走 8bpp，其余走 v1 4bpp 六色
+function buildCurrentFilmFile() {
+    if (!originalImage) {
+        throw new Error('请先上传图片');
+    }
+
+    var canvas = document.getElementById('canvas');
+    var ctx = canvas.getContext('2d');
+    var imageData = ctx.getImageData(0, 0, getCanvasWidth(), getCanvasHeight());
+
+    var profile = getActive8bppProfile();
+    var header;
+    var pixelData;
+    if (profile) {
+        header = generateFilmHeader8bpp(profile);
+        pixelData = processImageData8bpp(imageData, profile);
+    } else {
+        header = generateFilmHeader();
+        pixelData = processImageData(imageData);
+    }
+
+    window.processedDataForDownload = pixelData;
+
+    var filmFile = new Uint8Array(FILM_HEADER_SIZE + pixelData.length);
+    filmFile.set(header, 0);
+    filmFile.set(pixelData, FILM_HEADER_SIZE);
+    return filmFile;
+}
+
+function ditherImage(imageData) {
+    const ditherType = document.getElementById('ditherType').value;
+    const ditherStrength = parseFloat(document.getElementById('ditherStrength').value);
+
+    switch (ditherType) {
+        case 'adaptive':
+            return adaptiveDither(imageData);
+        case 'atkinsonEnhanced':
+            return atkinsonEnhancedQuantize(imageData);
+        case 'atkinsonSzCalib':
+            return atkinsonSzCalibQuantize(imageData);
+        case 'floydSteinberg':
+            return floydSteinbergDither(imageData, ditherStrength);
+        case 'atkinson':
+            return atkinsonDither(imageData, ditherStrength);
+        case 'stucki':
+            return stuckiDither(imageData, ditherStrength);
+        case 'jarvis':
+            return jarvisDither(imageData, ditherStrength);
+        case 'gammaFloydSteinberg':
+            return gammaFloydSteinbergDither(imageData, ditherStrength);
+        case 'bayer':
+            return bayerDither(imageData, ditherStrength);
+        case 'colorFast55':
+        case 'colorQual':
+        case 'colorQualMeasured':
+        case 'colorQualCalibrated':
+            // 关闭抖动时退化为逐像素最近色量化，输出仍是 8bpp 索引色
+            return cfQuantize(imageData, ditherStrength, isDitheringEnabled, CF_PROFILES[ditherType]);
+        case 'szEnhanced':
+            // 依赖 8bpp 的 3.7" 720×480 屏：三机型固件的 Pro 与通行证版（ARK）同屏同驱动
+            if (currentDeviceType !== 'FRAMEFILMPRO' && currentDeviceType !== 'FRAMEFILMARK') {
+                showMessage('SZ 增强仅支持 FrameFilm Pro / 通行证版', 'warning');
+                return floydSteinbergDither(imageData, ditherStrength);
+            }
+            if (!window.szEnhancedDither) return imageData;
+            // SZ 增强流水线（YRD0370 V7.5）输入为原始 cover 图，
+            // 不叠加 UI 对比度/饱和度调整（与 C++ source_cover_792x528.rgb 一致）
+            if (currentImageData &&
+                currentImageData.width === imageData.width &&
+                currentImageData.height === imageData.height) {
+                const rawImageData = new ImageData(
+                    new Uint8ClampedArray(currentImageData.data),
+                    currentImageData.width,
+                    currentImageData.height
+                );
+                return window.szEnhancedDither(rawImageData);
+            }
+            return window.szEnhancedDither(imageData);
+        default:
+            return imageData;
+    }
+}
+
+function decodeProcessedData(processedData, width, height) {
+    const imageData = new ImageData(width, height);
+    const data = imageData.data;
+
+    for (let y = 0; y < height; y++) {
+        for (let x = 0; x < width; x++) {
+            const newIndex = getPixelIndex(x, y, width, height);
+            const byteIndex = Math.floor(newIndex / 2);
+            const byte = processedData[byteIndex];
+
+            const code = (newIndex % 2 === 0) ? (byte >> 4) & 0x0F : byte & 0x0F;
+            const color = rgbPalette.find(c => c.code === code) || rgbPalette[1];
+
+            const index = (y * width + x) * 4;
+            data[index] = color.r;
+            data[index + 1] = color.g;
+            data[index + 2] = color.b;
+            data[index + 3] = 255;
+        }
+    }
+
+    return imageData;
+}
+
+function processImageData(imageData) {
+    const width = imageData.width;
+    const height = imageData.height;
+    const data = imageData.data;
+
+    var processedData = new Uint8Array(getFilmPixelDataSize());
+    for (let y = 0; y < height; y++) {
+        for (let x = 0; x < width; x++) {
+            const index = (y * width + x) * 4;
+            const r = data[index];
+            const g = data[index + 1];
+            const b = data[index + 2];
+
+            const closest = findClosestColor(r, g, b);
+            const code = closest.code;
+
+            const newIndex = getPixelIndex(x, y, width, height);
+            const byteIndex = Math.floor(newIndex / 2);
+
+            if (newIndex % 2 === 0) {
+                processedData[byteIndex] = (code << 4) | (processedData[byteIndex] & 0x0F);
+            } else {
+                processedData[byteIndex] = (processedData[byteIndex] & 0xF0) | code;
+            }
+        }
+    }
+
+    return processedData;
+}
+
+function analyzeImage(imageData) {
+    const data = imageData.data;
+    let totalBrightness = 0;
+    let totalContrast = 0;
+    let rSum = 0, gSum = 0, bSum = 0;
+    let rVariance = 0, gVariance = 0, bVariance = 0;
+    let pixelCount = data.length / 4;
+
+    // Calculate average brightness and color values
+    for (let i = 0; i < data.length; i += 4) {
+        const r = data[i];
+        const g = data[i + 1];
+        const b = data[i + 2];
+        
+        const brightness = (r + g + b) / 3;
+        totalBrightness += brightness;
+        rSum += r;
+        gSum += g;
+        bSum += b;
+    }
+
+    const avgBrightness = totalBrightness / pixelCount;
+    const avgR = rSum / pixelCount;
+    const avgG = gSum / pixelCount;
+    const avgB = bSum / pixelCount;
+
+    // Calculate contrast and color variance
+    for (let i = 0; i < data.length; i += 4) {
+        const r = data[i];
+        const g = data[i + 1];
+        const b = data[i + 2];
+        
+        const brightness = (r + g + b) / 3;
+        totalContrast += Math.abs(brightness - avgBrightness);
+        rVariance += Math.pow(r - avgR, 2);
+        gVariance += Math.pow(g - avgG, 2);
+        bVariance += Math.pow(b - avgB, 2);
+    }
+
+    const contrast = totalContrast / pixelCount;
+    const colorVariance = (rVariance + gVariance + bVariance) / (3 * pixelCount);
+    const colorSaturation = Math.sqrt(colorVariance) / 255;
+
+    return {
+        brightness: avgBrightness / 255, // Normalized 0-1
+        contrast: contrast / 127, // Normalized 0-2, but typically 0-1
+        colorSaturation: Math.min(1, colorSaturation) // Normalized 0-1
+    };
+}
+
+function getOptimalDitherParameters(imageAnalysis) {
+    const { brightness, contrast, colorSaturation } = imageAnalysis;
+
+    let ditherType = 'floydSteinberg';
+
+    if (colorSaturation > 0.6) {
+        ditherType = 'stucki';
+    } else if (contrast < 0.3) {
+        ditherType = 'atkinson';
+    } else if (brightness < 0.3 || brightness > 0.7) {
+        ditherType = 'jarvis';
+    }
+
+    let ditherStrength = 1.0;
+
+    if (contrast < 0.4) {
+        ditherStrength = 1.5 + (0.4 - contrast) * 2;
+    } else if (contrast > 0.7) {
+        ditherStrength = 0.8 - (contrast - 0.7) * 2;
+    }
+
+    if (colorSaturation > 0.5) {
+        ditherStrength *= 1.1;
+    }
+
+    ditherStrength = Math.max(0.5, Math.min(3.0, ditherStrength));
+
+    let contrastAdjustment = 1.2;
+
+    if (brightness < 0.4) {
+        contrastAdjustment = 1.4 + (0.4 - brightness) * 0.8;
+    } else if (brightness > 0.7) {
+        contrastAdjustment = 1.0 - (brightness - 0.7) * 0.5;
+    }
+
+    contrastAdjustment = Math.max(0.8, Math.min(2.0, contrastAdjustment));
+
+    return {
+        ditherType,
+        ditherStrength: parseFloat(ditherStrength.toFixed(1)),
+        contrast: parseFloat(contrastAdjustment.toFixed(1))
+    };
+}
+
+function applyDitherParameters(params) {
+    document.getElementById('ditherType').value = params.ditherType;
+    document.getElementById('ditherStrength').value = params.ditherStrength;
+    document.getElementById('ditherStrengthValue').textContent = params.ditherStrength;
+    document.getElementById('contrast').value = params.contrast;
+    document.getElementById('contrastValue').textContent = params.contrast;
+    syncAdjustSliders();
+}
+
+function autoConfigureDither() {
+    if (!currentImageData) {
+        alert('请先上传图片');
+        return;
+    }
+
+    const imageAnalysis = analyzeImage(currentImageData);
+    const optimalParams = getOptimalDitherParameters(imageAnalysis);
+    applyDitherParameters(optimalParams);
+
+    if (!isDitheringEnabled) {
+        toggleDither();
+    } else {
+        updateImage();
+    }
+
+    document.getElementById('imageResult').innerHTML = '<div class="info">已自动配置抖动参数</div>';
+}
+
+function convertImage() {
+    if (!originalImage) {
+        document.getElementById('imageResult').innerHTML = '<div class="error">请先上传图片</div>';
+        return;
+    }
+
+    try {
+        const canvas = document.getElementById('canvas');
+        const canvasWidth = getCanvasWidth();
+        const canvasHeight = getCanvasHeight();
+
+        const ctx = canvas.getContext('2d');
+        const imageData = ctx.getImageData(0, 0, canvasWidth, canvasHeight);
+
+        window.processedDataForDownload = processImageData(imageData);
+
+        document.getElementById('imageResult').innerHTML = `
+            <div class="success">转换完成！</div>
+            <p>文件大小: ${window.processedDataForDownload.length} 字节 (像素数据)</p>
+            <p class="info">文件总大小（含头）: ${window.processedDataForDownload.length + FILM_HEADER_SIZE} 字节</p>
+            <p class="info">点击下载按钮保存文件</p>
+        `;
+    } catch (error) {
+        document.getElementById('imageResult').innerHTML = `<div class="error">转换失败: ${error.message}</div>`;
+    }
+}
+
+function downloadFilmFile() {
+    if (!originalImage) {
+        document.getElementById('imageResult').innerHTML = '<div class="error">请先上传图片</div>';
+        return;
+    }
+
+    var filmFile;
+    try {
+        filmFile = buildCurrentFilmFile();
+    } catch (error) {
+        document.getElementById('imageResult').innerHTML = '<div class="error">转换失败: ' + error.message + '</div>';
+        return;
+    }
+
+    const fileName = document.getElementById('fileName').value || 'output.film';
+    downloadFile(filmFile, fileName);
+
+    var profile = getActive8bppProfile();
+    var formatText = profile ? profile.label + '，8bpp' : '6 色 4bpp（Format 0x00）';
+    document.getElementById('imageResult').innerHTML = '<div class="success">下载完成！</div>' +
+        '<p class="info">' + formatText + '，共 ' + filmFile.length + ' 字节</p>';
+}
+
+function updateCanvasScale() {
+    var containers = document.querySelectorAll('.polaroid-inner');
+    for (var i = 0; i < containers.length; i++) {
+        var container = containers[i];
+        var canvas = container.querySelector('canvas');
+        if (!canvas) continue;
+        var containerWidth = container.clientWidth;
+        var containerHeight = container.clientHeight;
+        if (containerWidth === 0 || containerHeight === 0) continue;
+        // 竖屏设备（Max）画布本身竖屏，无需旋转；横向设备画布旋转 90° 后竖屏显示
+        var portrait = getCanvasHeight() > getCanvasWidth();
+        var rotatedWidth = portrait ? getCanvasWidth() : getCanvasHeight();
+        var rotatedHeight = portrait ? getCanvasHeight() : getCanvasWidth();
+        var scaleVal = Math.min(containerWidth / rotatedWidth, containerHeight / rotatedHeight);
+        canvas.style.transform = portrait
+            ? 'translate(-50%, -50%) scale(' + scaleVal + ')'
+            : 'translate(-50%, -50%) rotate(90deg) scale(' + scaleVal + ')';
+    }
+}

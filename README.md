@@ -2,6 +2,8 @@
 
 页面是一间杂货店，直接展示龟龟和小丘的相片货柜。部署到 GitHub Pages，无登录、后台或付费服务。
 
+店内墙上有一个电子相册入口，弹窗只包含两项能力：Web Bluetooth 连接 FRAMEFILM 设备，以及在浏览器本地把照片转换为 `.film` 后发送到设备。设备协议和 Film 转换沿用 `ForFilm` 的实现；照片不会上传到网站服务器。
+
 ## 添加照片
 
 原图先按老板、再按拍摄日期分文件夹：龟龟放在 `photos/guigui/YYYY-MM-DD/`，小丘放在 `photos/xiaoqiu/YYYY-MM-DD/`。在对应日期文件夹中选择 **Add file → Upload files**，上传原图并提交到 `main`，网站随后自动更新。较大的文件可以通过 Git 上传。

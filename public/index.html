@@ -1,9 +1,120 @@
 <!doctype html>
-<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#e9dfcb"><meta name="description" content="GGG杂货铺，龟龟和小丘的相片。"><title>GGG杂货铺</title><link rel="icon" href="./favicon.svg" type="image/svg+xml"><link rel="stylesheet" href="./style.css?v=20261112-grounded"></head>
-<body><a class="skip" href="#content">跳到照片</a><div class="shop-interior" id="shop"><div class="ceiling" aria-hidden="true"><span></span><span></span><span></span></div><header class="room-header"><div class="pendant pendant-left" aria-hidden="true"><i></i></div><div class="shop-sign"><span class="sign-pin left" aria-hidden="true"></span><span class="sign-pin right" aria-hidden="true"></span><h1>GGG杂货铺</h1><nav aria-label="店主货柜"><a href="#guigui">龟龟</a><span aria-hidden="true">·</span><a href="#xiaoqiu">小丘</a></nav></div><div class="pendant pendant-right" aria-hidden="true"><i></i></div></header>
-<div class="wall-decor" aria-hidden="true"><div class="shop-window"><div class="outside"><span></span><i></i><b></b></div><div class="window-grid"></div><div class="window-sill"></div><div class="sill-pot"><i></i><i></i><i></i></div></div><div class="wall-display"><div class="art-frame"><i></i><span></span></div><div class="small-frame"><i></i></div><div class="wall-ledge"><span class="little-book"></span><span class="little-book second"></span><span class="little-bottle"></span></div></div><div class="hanging-plant"><span class="plant-cord"></span><div class="plant-pot"></div><i></i><i></i><i></i><i></i><i></i></div></div>
-<main id="content" tabindex="-1"><p id="loading" class="load-status" role="status">加载中…</p><div id="failure" class="load-status" role="alert" hidden><p>照片加载失败。</p><button id="retry">重试</button></div><div class="cabinets">
-<article class="cabinet cabinet-guigui" id="guigui" data-owner="guigui" aria-labelledby="guigui-name"><div class="cabinet-decor" aria-hidden="true"><div class="book-stack"><i></i><i></i><i></i></div><div class="glass-jar"><span></span></div><div class="small-clock"><i></i><b></b></div></div><div class="cabinet-crown"><span class="nameplate"><h2 id="guigui-name">龟龟</h2><small>相片橱柜</small></span><i aria-hidden="true"></i><i aria-hidden="true"></i></div><div class="cabinet-body"><div class="gallery" id="guigui-gallery"></div><div class="empty" id="guigui-empty" hidden>暂无照片</div><div class="cabinet-bottom" aria-hidden="true"><span></span><span></span></div></div><div class="cabinet-feet" aria-hidden="true"><span></span><span></span></div><div class="cabinet-ground" aria-hidden="true"></div></article>
-<article class="cabinet cabinet-xiaoqiu" id="xiaoqiu" data-owner="xiaoqiu" aria-labelledby="xiaoqiu-name"><div class="cabinet-decor" aria-hidden="true"><div class="flower-vase"><i></i><i></i><i></i><span></span></div><div class="ceramic-bowl"></div><div class="stacked-boxes"><span></span><span></span></div></div><div class="cabinet-crown"><span class="nameplate"><h2 id="xiaoqiu-name">小丘</h2><small>相片橱柜</small></span><i aria-hidden="true"></i><i aria-hidden="true"></i></div><div class="cabinet-body"><div class="gallery" id="xiaoqiu-gallery"></div><div class="empty" id="xiaoqiu-empty" hidden>暂无照片</div><div class="cabinet-bottom" aria-hidden="true"><span></span><span></span></div></div><div class="cabinet-feet" aria-hidden="true"><span></span><span></span></div><div class="cabinet-ground" aria-hidden="true"></div></article>
-</div></main><div class="shop-floor" aria-hidden="true"><div class="floor-plant"><i></i><i></i><i></i><i></i><span></span></div><div class="shop-rug"></div><div class="wood-crate"><span></span><span></span><span></span></div></div><div class="room-edge" aria-hidden="true"></div></div>
-<dialog id="viewer" aria-label="照片详情"><button class="close" aria-label="关闭">×</button><div class="viewer-layout"><img id="full-photo" alt="" decoding="async"><aside class="photo-info" aria-label="照片信息"><h2 id="photo-title"></h2><dl id="camera-details"></dl><p id="no-exif" hidden>照片未包含相机参数。</p><dl id="file-details"></dl><div class="photo-actions"><a id="original" target="_blank" rel="noopener">查看原图 ↗</a></div></aside></div></dialog><script src="./app.js?v=20261112-interior"></script></body></html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#e9dfcb">
+  <meta name="description" content="GGG杂货铺，龟龟和小丘的相片。">
+  <title>GGG杂货铺</title>
+  <link rel="icon" href="./favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="./style.css?v=20261113-album">
+</head>
+<body>
+  <a class="skip" href="#content">跳到照片</a>
+  <div class="shop-interior" id="shop">
+    <div class="ceiling" aria-hidden="true"><span></span><span></span><span></span></div>
+    <header class="room-header">
+      <div class="pendant pendant-left" aria-hidden="true"><i></i></div>
+      <div class="shop-sign">
+        <span class="sign-pin left" aria-hidden="true"></span>
+        <span class="sign-pin right" aria-hidden="true"></span>
+        <h1>GGG杂货铺</h1>
+        <nav aria-label="店主货柜"><a href="#guigui">龟龟</a><span aria-hidden="true">·</span><a href="#xiaoqiu">小丘</a></nav>
+      </div>
+      <div class="pendant pendant-right" aria-hidden="true"><i></i></div>
+    </header>
+
+    <div class="wall-decor">
+      <div class="shop-window" aria-hidden="true"><div class="outside"><span></span><i></i><b></b></div><div class="window-grid"></div><div class="window-sill"></div><div class="sill-pot"><i></i><i></i><i></i></div></div>
+      <div class="wall-display" aria-hidden="true"><div class="art-frame"><i></i><span></span></div><div class="small-frame"><i></i></div><div class="wall-ledge"><span class="little-book"></span><span class="little-book second"></span><span class="little-bottle"></span></div></div>
+      <div class="hanging-plant" aria-hidden="true"><span class="plant-cord"></span><div class="plant-pot"></div><i></i><i></i><i></i><i></i><i></i></div>
+      <button class="album-display" id="album-display" type="button" aria-haspopup="dialog" aria-controls="album-console">
+        <span class="album-display-cord" aria-hidden="true"></span>
+        <span class="album-display-frame" aria-hidden="true">
+          <span class="album-display-screen"><span>GGG</span><i></i><b></b></span>
+          <span class="album-display-led"></span>
+        </span>
+        <span class="album-display-caption"><strong>墙上相册</strong><small>点击管理</small></span>
+      </button>
+    </div>
+
+    <main id="content" tabindex="-1">
+      <p id="loading" class="load-status" role="status">加载中…</p>
+      <div id="failure" class="load-status" role="alert" hidden><p>照片加载失败。</p><button id="retry">重试</button></div>
+      <div class="cabinets">
+        <article class="cabinet cabinet-guigui" id="guigui" data-owner="guigui" aria-labelledby="guigui-name">
+          <div class="cabinet-decor" aria-hidden="true"><div class="book-stack"><i></i><i></i><i></i></div><div class="glass-jar"><span></span></div><div class="small-clock"><i></i><b></b></div></div>
+          <div class="cabinet-crown"><span class="nameplate"><h2 id="guigui-name">龟龟</h2><small>相片橱柜</small></span><i aria-hidden="true"></i><i aria-hidden="true"></i></div>
+          <div class="cabinet-body"><div class="gallery" id="guigui-gallery"></div><div class="empty" id="guigui-empty" hidden>暂无照片</div><div class="cabinet-bottom" aria-hidden="true"><span></span><span></span></div></div>
+          <div class="cabinet-feet" aria-hidden="true"><span></span><span></span></div><div class="cabinet-ground" aria-hidden="true"></div>
+        </article>
+        <article class="cabinet cabinet-xiaoqiu" id="xiaoqiu" data-owner="xiaoqiu" aria-labelledby="xiaoqiu-name">
+          <div class="cabinet-decor" aria-hidden="true"><div class="flower-vase"><i></i><i></i><i></i><span></span></div><div class="ceramic-bowl"></div><div class="stacked-boxes"><span></span><span></span></div></div>
+          <div class="cabinet-crown"><span class="nameplate"><h2 id="xiaoqiu-name">小丘</h2><small>相片橱柜</small></span><i aria-hidden="true"></i><i aria-hidden="true"></i></div>
+          <div class="cabinet-body"><div class="gallery" id="xiaoqiu-gallery"></div><div class="empty" id="xiaoqiu-empty" hidden>暂无照片</div><div class="cabinet-bottom" aria-hidden="true"><span></span><span></span></div></div>
+          <div class="cabinet-feet" aria-hidden="true"><span></span><span></span></div><div class="cabinet-ground" aria-hidden="true"></div>
+        </article>
+      </div>
+    </main>
+
+    <div class="shop-floor" aria-hidden="true"><div class="floor-plant"><i></i><i></i><i></i><span></span></div><div class="shop-rug"></div><div class="wood-crate"><span></span><span></span><span></span></div></div>
+    <div class="room-edge" aria-hidden="true"></div>
+  </div>
+
+  <dialog id="viewer" aria-label="照片详情">
+    <button class="close" aria-label="关闭">×</button>
+    <div class="viewer-layout"><img id="full-photo" alt="" decoding="async"><aside class="photo-info" aria-label="照片信息"><h2 id="photo-title"></h2><dl id="camera-details"></dl><p id="no-exif" hidden>照片未包含相机参数。</p><dl id="file-details"></dl><div class="photo-actions"><a id="original" target="_blank" rel="noopener">查看原图 ↗</a></div></aside></div>
+  </dialog>
+
+  <dialog id="album-console" aria-labelledby="album-console-title">
+    <div class="album-shell">
+      <header class="album-head">
+        <div><p class="album-eyebrow">GGG 杂货铺 · WALL EDITION</p><h2 id="album-console-title">电子相册管理</h2><p class="album-lede">把一张照片整理成设备能读的 Film，再送到墙上的相框。</p></div>
+        <button class="album-close" type="button" data-album-close aria-label="关闭电子相册管理">×</button>
+      </header>
+
+      <div class="album-console-grid">
+        <section class="album-card album-device-card" aria-labelledby="album-device-title">
+          <div class="album-card-title"><span class="album-icon album-icon-blue" aria-hidden="true">⌁</span><div><p class="album-card-kicker">01 · 设备</p><h3 id="album-device-title">连接墙上相框</h3></div><span id="album-connection-chip" class="album-status-chip">未连接</span></div>
+          <div class="album-device-status"><span id="album-status-dot" class="album-status-dot"></span><div><strong id="album-connection-status">等待连接</strong><p id="album-device-name">请在相框附近操作</p></div></div>
+          <div class="album-device-meta"><span>型号</span><strong id="album-device-type">—</strong><span>屏幕</span><strong id="album-device-resolution">—</strong></div>
+          <div class="album-actions"><button id="album-connect" class="album-button album-button-primary" type="button">连接设备</button><button id="album-reconnect" class="album-button" type="button">重连上次设备</button><button id="album-disconnect" class="album-button album-button-quiet" type="button" hidden>断开连接</button></div>
+          <p class="album-hint">支持名称以 FRAMEFILM 开头的设备。蓝牙只在 HTTPS 或 localhost 的 Chrome / Edge 中可用。</p>
+        </section>
+
+        <section class="album-card album-film-card" aria-labelledby="album-film-title">
+          <div class="album-card-title"><span class="album-icon album-icon-warm" aria-hidden="true">✦</span><div><p class="album-card-kicker">02 · Film</p><h3 id="album-film-title">转换并上传照片</h3></div><span class="album-mini-note">本地处理</span></div>
+          <div class="album-film-layout">
+            <div class="album-preview-column">
+              <div class="album-preview-label"><span>设备预览</span><span id="album-preview-size">600 × 400</span></div>
+              <div class="album-preview-frame"><div class="polaroid-inner"><canvas id="canvas" width="600" height="400"></canvas><span class="album-preview-placeholder">选择照片后预览</span></div></div>
+              <div class="album-preview-actions"><button id="toggleDither" class="album-button album-button-small" type="button">启用抖动</button><button id="album-rotate" class="album-button album-button-small" type="button">旋转 90°</button><button id="album-reset" class="album-button album-button-small" type="button">清空</button></div>
+            </div>
+            <div class="album-film-form">
+              <input id="imageFile" type="file" accept="image/*" hidden>
+              <label class="album-dropzone" for="imageFile"><span class="album-upload-glyph" aria-hidden="true">↑</span><strong>选择照片</strong><small>JPG / PNG / WebP 等，图片只在浏览器本地处理</small></label>
+              <div class="album-fields">
+                <label>抖动算法<select id="ditherType"><option value="floydSteinberg">Floyd–Steinberg · 推荐</option><option value="atkinson">Atkinson</option><option value="stucki">Stucki</option><option value="jarvis">Jarvis–Judice–Ninke</option><option value="adaptive">自适应</option><option value="bayer">Bayer</option></select></label>
+                <label id="ditherStrengthContainer">强度 <output id="ditherStrengthValue">1</output><input id="ditherStrength" type="range" min="0.2" max="2" step="0.1" value="1"></label>
+                <div id="colorAdjustContainer" class="album-adjust-grid"><label>对比度 <output id="contrastValue">1</output><input id="contrast" type="range" min="0.5" max="2" step="0.1" value="1"></label><label>饱和度 <output id="saturationValue">1</output><input id="saturation" type="range" min="0" max="2" step="0.1" value="1"></label></div>
+                <p id="bpp8Hint" class="album-form-note" hidden></p>
+                <label>文件名<input id="fileName" type="text" value="output.film" inputmode="latin" autocomplete="off"></label>
+              </div>
+              <div class="album-film-actions"><button id="album-convert" class="album-button album-button-primary" type="button">转换为 .film</button><button id="album-download" class="album-button" type="button">下载文件</button><button id="album-upload" class="album-button album-button-send" type="button" disabled>发送到设备</button></div>
+              <div id="imageResult" class="album-result" role="status" aria-live="polite"></div>
+              <div id="transfer-container" class="album-transfer" hidden><div class="album-transfer-head"><span id="transfer-status">准备传输…</span><span id="transfer-progress">0%</span></div><div class="album-progress-track"><span id="transfer-progress-bar"></span></div><div class="album-transfer-actions"><button id="album-upload-cancel" class="album-button album-button-small" type="button" hidden>取消传输</button><button id="album-upload-retry" class="album-button album-button-small" type="button" hidden>重试上次</button></div></div>
+            </div>
+          </div>
+        </section>
+      </div>
+      <footer class="album-footnote"><span class="album-footnote-mark">GGG</span><span>只保留两件事：连接设备 · 转换并上传 Film。照片不会上传到店铺服务器。</span></footer>
+    </div>
+  </dialog>
+
+  <script src="./forfilm-utils.js?v=20261113"></script>
+  <script src="./forfilm-convert.js?v=20261113"></script>
+  <script src="./forfilm-ark-device.js?v=20261113"></script>
+  <script src="./app.js?v=20261112-interior"></script>
+  <script src="./album-console.js?v=20261113"></script>
+</body>
+</html>
